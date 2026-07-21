@@ -1,0 +1,49 @@
+{
+  "name": "prompt-canvas-seedance",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "node scripts/run-vinext.mjs dev",
+    "bridge": "node scripts/codex-bridge.mjs",
+    "build": "node scripts/run-vinext.mjs build",
+    "start": "node scripts/run-vinext.mjs start",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/openrouter-provider.test.mjs tests/comfly-llm-provider.test.mjs tests/grok-build-provider.test.mjs tests/antigravity-provider.test.mjs tests/image-generation-provider.test.mjs tests/video-generation-provider.test.mjs tests/media-output-store.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "@openai/codex-sdk": "^0.144.5",
+    "@openrouter/agent": "0.7.2",
+    "@xyflow/react": "^12.11.2",
+    "drizzle-orm": "0.45.2",
+    "gsap": "^3.15.0",
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "type": "module"
+}

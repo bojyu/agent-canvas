@@ -1,0 +1,14 @@
+node_modules/
+.npm-cache/
+.playwright-cli/
+output/playwright/
+.env.local
+dist/
+.next/
+.vinext/
+.wrangler/
+.devserver.*.log
+.dev.*.log
+.bridge.*.log
+.prompt-flow-data/
+*.tsbuildinfo
