@@ -16,6 +16,19 @@ const resizeObserverErrorGuard = `
 })();
 `;
 
+const themeInitScript = `
+(() => {
+  const storageKey = "agent-canvas-theme";
+  const stored = window.localStorage.getItem(storageKey);
+  const preference = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+  const dark = preference === "dark" || (preference === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const root = document.documentElement;
+  root.dataset.themePreference = preference;
+  root.dataset.theme = dark ? "dark" : "light";
+  root.style.colorScheme = dark ? "dark" : "light";
+})();
+`;
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -37,8 +50,9 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script dangerouslySetInnerHTML={{ __html: resizeObserverErrorGuard }} />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>

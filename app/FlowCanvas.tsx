@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import {
@@ -33,8 +33,10 @@ import "@xyflow/react/dist/style.css";
 
 gsap.registerPlugin(useGSAP);
 
-type NodeKind = "reference" | "video" | "textBox" | "codex" | "promptEditor" | "imageGenerator" | "videoGenerator" | "imageOutput" | "videoOutput" | "output" | "revision" | "revisedOutput" | "textInput" | "textOutput";
+type NodeKind = "reference" | "video" | "textBox" | "codex" | "promptEditor" | "imageGenerator" | "videoGenerator" | "imageOutput" | "videoOutput" | "output" | "revision" | "revisedOutput" | "textInput" | "textOutput" | "group";
 type PaletteNodeKind = "reference" | "video" | "text" | "codex" | "prompteditor" | "imagegenerator" | "videogenerator";
+type FlowPresetId = "prompt" | "image-generation" | "video-generation";
+type ThemePreference = "light" | "dark" | "system";
 type MediaSlot = {
   slot: number;
   marker: string;
@@ -177,6 +179,7 @@ type GraphData = Record<string, unknown> & {
   videoGenerationError?: string;
   generationMeta?: string;
   assignedMarkers?: string[];
+  memberCount?: number;
   onUpdate?: (patch: Partial<GraphData>) => void;
   onDelete?: () => void;
   onRun?: () => void;
@@ -227,9 +230,16 @@ const STORAGE_KEY = "prompt-flow-core-v3";
 const ACTIVE_PROJECT_KEY = "prompt-flow-active-project";
 const OPEN_PROJECTS_KEY = "prompt-flow-open-projects";
 const LIBRARY_STATE_KEY = "prompt-flow-library-open";
+const THEME_STORAGE_KEY = "agent-canvas-theme";
 const TASK_PANEL_STATE_KEY = "prompt-flow-task-panel-open";
 const SAVED_TASK_IDS_KEY = "prompt-flow-saved-task-ids";
 const BRIDGE_URL = "http://127.0.0.1:4317";
+const FLOW_PRESET_DRAG_TYPE = "application/x-agent-canvas-preset";
+const FLOW_PRESETS: { id: FlowPresetId; label: string; description: string; glyph: string }[] = [
+  { id: "prompt", label: "常规提示词", description: "参考图 → 编辑改写 → 文本框", glyph: "词" },
+  { id: "image-generation", label: "图片生成", description: "参考图 → 图片生成 → 图片", glyph: "图" },
+  { id: "video-generation", label: "视频生成", description: "参考图 → 视频生成 → 视频", glyph: "视" },
+];
 const PROVIDERS: AgentProvider[] = ["codex", "openrouter", "comfly", "grok-build", "antigravity"];
 const PROVIDER_LABELS: Record<AgentProvider, string> = {
   codex: "Codex",
@@ -298,12 +308,10 @@ const LEGACY_REWRITE_TITLES = new Set([
   "Agent 改写",
 ]);
 const MAX_REWRITE_IMAGES = 9;
+const MAX_REWRITE_VIDEOS = 3;
 const MAX_IMAGE_GENERATION_IMAGES = 12;
 const MAX_VIDEO_GENERATION_REFERENCES = 12;
-const MAX_IMAGES = MAX_IMAGE_GENERATION_IMAGES;
-const MAX_VIDEOS = 3;
-const MAX_REWRITE_REFERENCES = MAX_REWRITE_IMAGES + MAX_VIDEOS;
-const MAX_CANVAS_REFERENCES = MAX_IMAGES + MAX_VIDEOS;
+const MAX_REWRITE_REFERENCES = MAX_REWRITE_IMAGES + MAX_REWRITE_VIDEOS;
 const ACTIVE_TASK_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["completed", "failed", "cancelled"]);
 const TASK_POLL_FALLBACK_MS = 3_000;
@@ -312,6 +320,19 @@ const TASK_SUBMIT_TIMEOUT_MS = 30_000;
 const MAX_PORTABLE_NODES = 500;
 const MAX_PORTABLE_EDGES = 2_000;
 const MAX_PORTABLE_FILE_BYTES = 200_000_000;
+
+function storedThemePreference(): ThemePreference {
+  if (typeof window === "undefined") return "system";
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY) || document.documentElement.dataset.themePreference;
+  return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+}
+
+function applyThemePreference(preference: ThemePreference, systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches) {
+  const dark = preference === "dark" || (preference === "system" && systemDark);
+  document.documentElement.dataset.themePreference = preference;
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+}
 const TASK_STAGE_LABELS: Record<TaskStage, string> = {
   queued: "排队中",
   validating: "检查输入",
@@ -927,7 +948,67 @@ function TextBoxNode({ data, selected }: NodeProps<GraphNode>) {
   );
 }
 
+function CanvasGroupNode({ data, selected }: NodeProps<GraphNode>) {
+  const memberCount = Number(data.memberCount || 0);
+  const title = String(data.title || "群组");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
+  const beginRename = () => {
+    setTitleDraft(title);
+    setEditingTitle(true);
+  };
+  const saveTitle = () => {
+    const nextTitle = titleDraft.trim().slice(0, 40) || "群组";
+    setEditingTitle(false);
+    setTitleDraft(nextTitle);
+    if (nextTitle !== title) data.onUpdate?.({ title: nextTitle });
+  };
+  return (
+    <>
+      <NodeResizer
+        isVisible={selected}
+        minWidth={180}
+        minHeight={140}
+        color="rgba(121, 101, 184, .42)"
+        handleClassName="group-resize-handle"
+        lineClassName="group-resize-line"
+      />
+      <div className={`canvas-group-frame ${selected ? "is-selected" : ""}`} title="拖动群组外框可整体移动；选中后可从边缘调整大小；Ctrl/Cmd + Backspace 解组">
+        <div className="canvas-group-caption">
+          <span aria-hidden="true">组</span>
+          {editingTitle ? (
+            <input
+              className="nodrag nopan group-title-input"
+              autoFocus
+              maxLength={40}
+              aria-label="群组名称"
+              value={titleDraft}
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onBlur={saveTitle}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  saveTitle();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setTitleDraft(title);
+                  setEditingTitle(false);
+                }
+              }}
+            />
+          ) : (
+            <button className="nodrag nopan group-title-button" type="button" title="双击重命名" onDoubleClick={(event) => { event.stopPropagation(); beginRename(); }}>{title}</button>
+          )}
+          <small>{memberCount} 个节点</small>
+          {selected && !editingTitle && <button className="nodrag nopan group-rename-button" type="button" aria-label="重命名群组" title="重命名群组" onClick={(event) => { event.stopPropagation(); beginRename(); }}>✎</button>}
+        </div>
+      </div>
+    </>
+  );
+}
+
 const nodeTypes = {
+  group: CanvasGroupNode,
   reference: ReferenceNode,
   video: VideoNode,
   codex: CodexNode,
@@ -1079,6 +1160,85 @@ type CanvasHistorySnapshot = {
 };
 
 const MAX_HISTORY_ENTRIES = 50;
+const GROUP_PADDING_X = 42;
+const GROUP_PADDING_TOP = 64;
+const GROUP_PADDING_BOTTOM = 42;
+
+function nodeVisualSize(node: GraphNode) {
+  const styleWidth = typeof node.style?.width === "number" ? node.style.width : Number.parseFloat(String(node.style?.width || ""));
+  const styleHeight = typeof node.style?.height === "number" ? node.style.height : Number.parseFloat(String(node.style?.height || ""));
+  const width = Number(node.measured?.width ?? node.width ?? styleWidth);
+  const height = Number(node.measured?.height ?? node.height ?? styleHeight);
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : 360,
+    height: Number.isFinite(height) && height > 0 ? height : 320,
+  };
+}
+
+function absoluteNodePosition(node: GraphNode, nodes: GraphNode[]) {
+  let x = node.position.x;
+  let y = node.position.y;
+  let parentId = node.parentId;
+  const byId = new Map(nodes.map((item) => [item.id, item]));
+  const visited = new Set<string>();
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    x += parent.position.x;
+    y += parent.position.y;
+    parentId = parent.parentId;
+  }
+  return { x, y };
+}
+
+function detachNodeFromGroup(node: GraphNode, position: { x: number; y: number }) {
+  const detached = { ...node, position: { ...position } };
+  delete detached.parentId;
+  delete detached.extent;
+  delete detached.expandParent;
+  return detached;
+}
+
+function clipboardSelectionNodes(nodes: GraphNode[]) {
+  const selectedIds = new Set(nodes.filter((node) => node.selected).map((node) => node.id));
+  const selectedGroupIds = new Set(nodes.filter((node) => node.selected && node.type === "group").map((node) => node.id));
+  selectedGroupIds.forEach((groupId) => nodes.filter((node) => node.parentId === groupId).forEach((node) => selectedIds.add(node.id)));
+  const copied = nodes
+    .filter((node) => selectedIds.has(node.id))
+    .map((node) => {
+      const copy = duplicatedNode(node);
+      if (!copy.parentId || selectedIds.has(copy.parentId)) return copy;
+      return detachNodeFromGroup(copy, absoluteNodePosition(node, nodes));
+    });
+  return [
+    ...copied.filter((node) => node.type === "group"),
+    ...copied.filter((node) => node.type !== "group"),
+  ];
+}
+
+function pasteClipboardNodes(copiedNodes: GraphNode[], offset: { x: number; y: number }) {
+  const copiedIds = new Set(copiedNodes.map((node) => node.id));
+  const idMap = new Map(copiedNodes.map((node) => [node.id, `${node.type || "node"}-${crypto.randomUUID().slice(0, 8)}`]));
+  return copiedNodes.map((node) => {
+    const copiedParentId = node.parentId && copiedIds.has(node.parentId) ? node.parentId : undefined;
+    const position = copiedParentId
+      ? { ...node.position }
+      : { x: node.position.x + offset.x, y: node.position.y + offset.y };
+    const copy = duplicatedNode(node, idMap.get(node.id), position, !copiedParentId);
+    if (copiedParentId) {
+      copy.parentId = idMap.get(copiedParentId);
+      copy.extent = "parent";
+      copy.expandParent = true;
+      copy.selected = false;
+    } else {
+      delete copy.parentId;
+      delete copy.extent;
+      delete copy.expandParent;
+    }
+    return copy;
+  });
+}
 
 function canvasHistorySnapshot(projectId: string, nodes: GraphNode[], edges: Edge[]): CanvasHistorySnapshot {
   return {
@@ -1099,6 +1259,9 @@ function sameCanvasHistorySnapshot(left: CanvasHistorySnapshot, right: CanvasHis
     if (!other) return false;
     return node.id === other.id
       && node.type === other.type
+      && node.parentId === other.parentId
+      && node.extent === other.extent
+      && node.expandParent === other.expandParent
       && node.position.x === other.position.x
       && node.position.y === other.position.y
       && node.width === other.width
@@ -1182,6 +1345,7 @@ function portableProjectNodes(nodes: GraphNode[]) {
 }
 
 const PORTABLE_NODE_TYPES = new Set([
+  "group",
   "reference",
   "video",
   "codex",
@@ -1284,6 +1448,15 @@ function parsePortableCanvas(value: unknown) {
     }
     nodeIds.add(item.id);
     return item as GraphNode;
+  });
+
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  nodes.forEach((node) => {
+    if (!node.parentId) return;
+    const parent = nodesById.get(node.parentId);
+    if (!parent || parent.type !== "group" || node.type === "group") {
+      throw new Error(`节点「${node.id}」引用了无效的群组`);
+    }
   });
 
   const edgeIds = new Set<string>();
@@ -1609,6 +1782,7 @@ function FlowWorkspace() {
   const [fileBusy, setFileBusy] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "unsaved" | "saving" | "error">("saved");
   const [libraryOpen, setLibraryOpen] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem(LIBRARY_STATE_KEY) !== "false");
+  const [themePreference, setThemePreference] = useState<ThemePreference>(storedThemePreference);
   const [lastAddedNodeId, setLastAddedNodeId] = useState("");
   const [altCopyMode, setAltCopyMode] = useState(false);
   const [historyAvailability, setHistoryAvailability] = useState({ canUndo: false, canRedo: false });
@@ -1636,6 +1810,16 @@ function FlowWorkspace() {
   const workspaceRef = useRef<HTMLElement>(null);
   const libraryRef = useRef<HTMLElement>(null);
   const { fitView, screenToFlowPosition } = useReactFlow();
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const syncTheme = () => applyThemePreference(themePreference, media.matches);
+    window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+    syncTheme();
+    if (themePreference !== "system") return;
+    media.addEventListener("change", syncTheme);
+    return () => media.removeEventListener("change", syncTheme);
+  }, [themePreference]);
   const finishAltDragCopy = useCallback((draggedNode?: GraphNode) => {
     const copyState = altDragCopyStateRef.current;
     if (!copyState) {
@@ -1648,6 +1832,7 @@ function FlowWorkspace() {
     const pairByCopy = new Map(copyState.pairs.map((pair) => [pair.copyId, pair]));
     setNodes((current) => {
       const currentById = new Map(current.map((node) => [node.id, node]));
+      const copiedIds = new Set(copyState.pairs.map((pair) => pair.copyId));
       const finalPositions = new Map(copyState.pairs.map((pair) => {
         const movedNode = draggedNode?.id === pair.originalId ? draggedNode : currentById.get(pair.originalId);
         return [pair.originalId, movedNode ? { ...movedNode.position } : { ...pair.originalPosition }];
@@ -1656,7 +1841,7 @@ function FlowWorkspace() {
         const originalPair = pairByOriginal.get(node.id);
         if (originalPair) return { ...node, position: { ...originalPair.originalPosition }, selected: false, dragging: false };
         const copyPair = pairByCopy.get(node.id);
-        if (copyPair) return { ...node, position: finalPositions.get(copyPair.originalId) || node.position, selected: true, dragging: false };
+        if (copyPair) return { ...node, position: finalPositions.get(copyPair.originalId) || node.position, selected: !node.parentId || !copiedIds.has(node.parentId), dragging: false };
         return node.selected ? { ...node, selected: false } : node;
       });
     });
@@ -1786,6 +1971,91 @@ function FlowWorkspace() {
     };
   }, [commitPendingHistory, edges, hydrated, nodes, projectId, refreshHistoryAvailability]);
 
+  const groupSelectedNodes = useCallback(() => {
+    const selectedNodes = nodes.filter((node) => node.selected);
+    if (selectedNodes.length < 2) {
+      setToast("请先选择至少 2 个节点再编组");
+      return;
+    }
+    if (selectedNodes.some((node) => node.type === "group" || node.parentId)) {
+      setToast("暂不支持嵌套编组，请先用 Ctrl/Cmd + Backspace 解组");
+      return;
+    }
+    if (nodes.length >= MAX_PORTABLE_NODES) {
+      setToast(`编组后会超过画布 ${MAX_PORTABLE_NODES} 个节点的上限`);
+      return;
+    }
+
+    const selectedIds = new Set(selectedNodes.map((node) => node.id));
+    const bounds = selectedNodes.map((node) => ({ node, ...nodeVisualSize(node) }));
+    const minX = Math.min(...bounds.map(({ node }) => node.position.x));
+    const minY = Math.min(...bounds.map(({ node }) => node.position.y));
+    const maxX = Math.max(...bounds.map(({ node, width }) => node.position.x + width));
+    const maxY = Math.max(...bounds.map(({ node, height }) => node.position.y + height));
+    const groupId = `group-${crypto.randomUUID().slice(0, 8)}`;
+    const groupPosition = { x: minX - GROUP_PADDING_X, y: minY - GROUP_PADDING_TOP };
+    const groupNode: GraphNode = {
+      id: groupId,
+      type: "group",
+      position: groupPosition,
+      selected: true,
+      style: {
+        width: maxX - minX + GROUP_PADDING_X * 2,
+        height: maxY - minY + GROUP_PADDING_TOP + GROUP_PADDING_BOTTOM,
+      },
+      data: { kind: "group", title: "群组", memberCount: selectedNodes.length },
+    };
+
+    setNodes((current) => [
+      groupNode,
+      ...current.map((node) => selectedIds.has(node.id)
+        ? {
+            ...node,
+            parentId: groupId,
+            extent: "parent" as const,
+            expandParent: true,
+            position: { x: node.position.x - groupPosition.x, y: node.position.y - groupPosition.y },
+            selected: false,
+          }
+        : node.selected ? { ...node, selected: false } : node),
+    ]);
+    setEdges((current) => current.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+    setLastAddedNodeId(groupId);
+    setToast(`已将 ${selectedNodes.length} 个节点编为一组，拖动浅色外框可整体移动`);
+  }, [nodes]);
+
+  const ungroupSelectedNodes = useCallback(() => {
+    const groupIds = new Set<string>();
+    nodes.forEach((node) => {
+      if (node.selected && node.type === "group") groupIds.add(node.id);
+      if (node.selected && node.parentId) groupIds.add(node.parentId);
+    });
+    if (!groupIds.size) {
+      setToast("请先选中群组外框或组内节点再解组");
+      return;
+    }
+
+    setNodes((current) => {
+      const groups = new Map(current.filter((node) => groupIds.has(node.id)).map((node) => [node.id, node]));
+      return current.flatMap((node) => {
+        if (groupIds.has(node.id)) return [];
+        if (node.parentId && groupIds.has(node.parentId)) {
+          const parent = groups.get(node.parentId);
+          if (!parent) return [detachNodeFromGroup(node, absoluteNodePosition(node, current))];
+          return [{
+            ...detachNodeFromGroup(node, {
+              x: parent.position.x + node.position.x,
+              y: parent.position.y + node.position.y,
+            }),
+            selected: true,
+          }];
+        }
+        return [node.selected ? { ...node, selected: false } : node];
+      });
+    });
+    setToast(`已打散 ${groupIds.size} 个群组，节点与连线均已保留`);
+  }, [nodes]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAltCopyMode(true);
@@ -1807,16 +2077,31 @@ function FlowWorkspace() {
       const canvasContext = !target || target === document.body || Boolean(target.closest(".flow-canvas"));
       if (!canvasContext) return;
 
+      if (modifier && key === "g") {
+        event.preventDefault();
+        groupSelectedNodes();
+        return;
+      }
+
+      if (modifier && event.key === "Backspace") {
+        event.preventDefault();
+        ungroupSelectedNodes();
+        return;
+      }
+
       if (modifier && key === "c") {
-        const selectedNodes = nodes.filter((node) => node.selected);
-        if (!selectedNodes.length) return;
+        const copiedNodes = clipboardSelectionNodes(nodes);
+        if (!copiedNodes.length) return;
         canvasClipboardRef.current = {
           projectId,
-          nodes: selectedNodes.map((node) => duplicatedNode(node)),
+          nodes: copiedNodes,
         };
         pasteCountRef.current = 0;
         event.preventDefault();
-        setToast(`已复制 ${selectedNodes.length} 个节点，不包含连线`);
+        const groupCount = copiedNodes.filter((node) => node.type === "group").length;
+        setToast(groupCount
+          ? `已复制 ${groupCount} 个群组及其 ${copiedNodes.length - groupCount} 个节点，不包含连线`
+          : `已复制 ${copiedNodes.length} 个节点，不包含连线`);
         return;
       }
 
@@ -1828,28 +2113,25 @@ function FlowWorkspace() {
           setToast("节点剪贴板属于另一个画布，请在当前画布重新复制");
           return;
         }
-        const imageCopies = clipboard.nodes.filter((node) => node.type === "reference").length;
-        const videoCopies = clipboard.nodes.filter((node) => node.type === "video").length;
-        const currentImages = nodes.filter((node) => node.type === "reference").length;
-        const currentVideos = nodes.filter((node) => node.type === "video").length;
-        if (currentImages + imageCopies > MAX_IMAGES || currentVideos + videoCopies > MAX_VIDEOS || currentImages + currentVideos + imageCopies + videoCopies > MAX_CANVAS_REFERENCES) {
-          setToast("粘贴后会超过图片或视频节点上限");
+        if (nodes.length + clipboard.nodes.length > MAX_PORTABLE_NODES) {
+          setToast(`粘贴后会超过画布 ${MAX_PORTABLE_NODES} 个节点的上限`);
           return;
         }
         pasteCountRef.current += 1;
-        const minX = Math.min(...clipboard.nodes.map((node) => node.position.x));
-        const minY = Math.min(...clipboard.nodes.map((node) => node.position.y));
+        const rootNodes = clipboard.nodes.filter((node) => !node.parentId || !clipboard.nodes.some((parent) => parent.id === node.parentId));
+        const minX = Math.min(...rootNodes.map((node) => node.position.x));
+        const minY = Math.min(...rootNodes.map((node) => node.position.y));
         const pointer = lastPointerClientRef.current ? screenToFlowPosition(lastPointerClientRef.current) : null;
         const cascade = pasteCountRef.current * 22;
         const offsetX = pointer ? pointer.x - minX + cascade : cascade;
         const offsetY = pointer ? pointer.y - minY + cascade : cascade;
-        const pastedNodes = clipboard.nodes.map((node) => duplicatedNode(node, `${node.type || "node"}-${crypto.randomUUID().slice(0, 8)}`, {
-          x: node.position.x + offsetX,
-          y: node.position.y + offsetY,
-        }, true));
+        const pastedNodes = pasteClipboardNodes(clipboard.nodes, { x: offsetX, y: offsetY });
         setNodes((current) => [...current.map((node) => node.selected ? { ...node, selected: false } : node), ...pastedNodes]);
         setLastAddedNodeId(pastedNodes[0]?.id || "");
-        setToast(`已粘贴 ${pastedNodes.length} 个独立节点`);
+        const pastedGroupCount = pastedNodes.filter((node) => node.type === "group").length;
+        setToast(pastedGroupCount
+          ? `已粘贴 ${pastedGroupCount} 个独立群组，不包含连线`
+          : `已粘贴 ${pastedNodes.length} 个独立节点`);
         return;
       }
 
@@ -1858,10 +2140,20 @@ function FlowWorkspace() {
       const selectedEdgeIds = new Set(edges.filter((edge) => edge.selected).map((edge) => edge.id));
       if (!selectedNodeIds.size && !selectedEdgeIds.size) return;
       event.preventDefault();
-      if (selectedNodeIds.size) setNodes((current) => current.filter((node) => !selectedNodeIds.has(node.id)));
+      const selectedGroupIds = new Set(nodes.filter((node) => node.selected && node.type === "group").map((node) => node.id));
+      nodes.forEach((node) => { if (node.parentId && selectedGroupIds.has(node.parentId)) selectedNodeIds.add(node.id); });
+      if (selectedNodeIds.size) {
+        setNodes((current) => {
+          const remaining = current.filter((node) => !selectedNodeIds.has(node.id));
+          const populatedGroupIds = new Set(remaining.map((node) => node.parentId).filter((id): id is string => Boolean(id)));
+          return remaining.filter((node) => node.type !== "group" || populatedGroupIds.has(node.id));
+        });
+      }
       setEdges((current) => current.filter((edge) => !selectedEdgeIds.has(edge.id) && !selectedNodeIds.has(edge.source) && !selectedNodeIds.has(edge.target)));
       setToast(selectedNodeIds.size
-        ? `已删除 ${selectedNodeIds.size} 个节点及其连线`
+        ? selectedGroupIds.size
+          ? `已删除 ${selectedGroupIds.size} 个群组及其中的 ${selectedNodeIds.size - selectedGroupIds.size} 个节点，可用 Ctrl/Cmd + Z 撤销`
+          : `已删除 ${selectedNodeIds.size} 个节点及其连线`
         : `已断开 ${selectedEdgeIds.size} 条连接`);
     };
     const handleKeyUp = (event: KeyboardEvent) => { if (event.key === "Alt") setAltCopyMode(false); };
@@ -1877,7 +2169,7 @@ function FlowWorkspace() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, [edges, fileManagerOpen, finishAltDragCopy, mediaSettingsOpen, nodes, projectId, redoCanvas, screenToFlowPosition, undoCanvas]);
+  }, [edges, fileManagerOpen, finishAltDragCopy, groupSelectedNodes, mediaSettingsOpen, nodes, projectId, redoCanvas, screenToFlowPosition, undoCanvas, ungroupSelectedNodes]);
 
   useGSAP(() => {
     const media = gsap.matchMedia();
@@ -2230,10 +2522,18 @@ function FlowWorkspace() {
   }, []);
 
   const deleteNode = useCallback((id: string) => {
-    setNodes((current) => current.filter((node) => node.id !== id));
-    setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
+    const deleteIds = new Set([id]);
+    if (nodes.find((node) => node.id === id)?.type === "group") {
+      nodes.forEach((node) => { if (node.parentId === id) deleteIds.add(node.id); });
+    }
+    setNodes((current) => {
+      const remaining = current.filter((node) => !deleteIds.has(node.id));
+      const populatedGroupIds = new Set(remaining.map((node) => node.parentId).filter((parentId): parentId is string => Boolean(parentId)));
+      return remaining.filter((node) => node.type !== "group" || populatedGroupIds.has(node.id));
+    });
+    setEdges((current) => current.filter((edge) => !deleteIds.has(edge.source) && !deleteIds.has(edge.target)));
     setToast("节点已删除");
-  }, []);
+  }, [nodes]);
 
   const applyTaskOutcome = useCallback((task: CanvasTask, applyResult = true) => {
     if (projectLoadBusy.current) return;
@@ -2853,6 +3153,7 @@ function FlowWorkspace() {
         imageProviderOptions: node.type === "imagegenerator" ? imageProviderOptions : undefined,
         videoGenerationProviderOptions: node.type === "videogenerator" ? videoGenerationProviderOptions : undefined,
         assignedMarkers,
+        memberCount: node.type === "group" ? nodes.filter((member) => member.parentId === node.id).length : node.data.memberCount,
         busy: Boolean(activeTask),
         busyLabel: activeTask ? TASK_STAGE_LABELS[activeTask.stage] : undefined,
         onUpdate: (patch: Partial<GraphData>) => updateNode(node.id, patch),
@@ -2937,13 +3238,13 @@ function FlowWorkspace() {
   const onNodeDragStart = useCallback((event: MouseEvent | TouchEvent, draggedNode: GraphNode) => {
     const altPressed = "altKey" in event && event.altKey;
     if ((!altPressed && !altCopyMode) || altDragCopyActiveRef.current) return;
-    const sourceNodes = draggedNode.selected ? nodes.filter((node) => node.selected) : [draggedNode];
-    const imageCopies = sourceNodes.filter((node) => node.type === "reference").length;
-    const videoCopies = sourceNodes.filter((node) => node.type === "video").length;
-    const currentImages = nodes.filter((node) => node.type === "reference").length;
-    const currentVideos = nodes.filter((node) => node.type === "video").length;
-    if (currentImages + imageCopies > MAX_IMAGES || currentVideos + videoCopies > MAX_VIDEOS || currentImages + currentVideos + imageCopies + videoCopies > MAX_CANVAS_REFERENCES) {
-      setToast("Alt 拖动复制会超过图片或视频节点上限");
+    const initialSourceNodes = draggedNode.selected ? nodes.filter((node) => node.selected) : [draggedNode];
+    const selectedGroupIds = new Set(initialSourceNodes.filter((node) => node.type === "group").map((node) => node.id));
+    const sourceIds = new Set(initialSourceNodes.map((node) => node.id));
+    nodes.forEach((node) => { if (node.parentId && selectedGroupIds.has(node.parentId)) sourceIds.add(node.id); });
+    const sourceNodes = nodes.filter((node) => sourceIds.has(node.id));
+    if (nodes.length + sourceNodes.length > MAX_PORTABLE_NODES) {
+      setToast(`Alt 拖动复制会超过画布 ${MAX_PORTABLE_NODES} 个节点的上限`);
       return;
     }
     altDragCopyActiveRef.current = true;
@@ -2955,7 +3256,11 @@ function FlowWorkspace() {
         originalPosition: { ...node.position },
       })),
     };
-    const stationaryCopies = sourceNodes.map((node) => duplicatedNode(node, idMap.get(node.id), node.position, false));
+    const stationaryCopies = sourceNodes.map((node) => {
+      const copy = duplicatedNode(node, idMap.get(node.id), node.position, false);
+      if (node.parentId && idMap.has(node.parentId)) copy.parentId = idMap.get(node.parentId);
+      return copy;
+    });
     setNodes((current) => [...current, ...stationaryCopies]);
     setEdges((current) => current.map((edge) => ({
       ...edge,
@@ -2982,7 +3287,7 @@ function FlowWorkspace() {
       const otherMediaEdges = edges.filter((edge) => edge.target === target.id && edge.targetHandle !== connection.targetHandle && slotNumber(edge) !== null);
       const imageCount = otherMediaEdges.filter((edge) => nodes.find((node) => node.id === edge.source)?.type === "reference").length;
       const videoCount = otherMediaEdges.filter((edge) => nodes.find((node) => node.id === edge.source)?.type === "video").length;
-      return source.type === "reference" ? imageCount < MAX_REWRITE_IMAGES : videoCount < MAX_VIDEOS;
+      return source.type === "reference" ? imageCount < MAX_REWRITE_IMAGES : videoCount < MAX_REWRITE_VIDEOS;
     }
     if (source.type === "reference" && target.type === "imagegenerator") {
       if (!connection.targetHandle?.startsWith("media-")) return false;
@@ -3038,16 +3343,8 @@ function FlowWorkspace() {
   }, [isValidConnection, nodes, updateNode]);
 
   const addCanvasNode = (kind: PaletteNodeKind) => {
-    if (kind === "reference" && nodes.filter((node) => node.type === "reference").length >= MAX_IMAGES) {
-      setToast("当前画布最多添加 12 张参考图");
-      return;
-    }
-    if (kind === "video" && nodes.filter((node) => node.type === "video").length >= MAX_VIDEOS) {
-      setToast("当前画布最多添加 3 个参考视频");
-      return;
-    }
-    if ((kind === "reference" || kind === "video") && nodes.filter((node) => node.type === "reference" || node.type === "video").length >= MAX_CANVAS_REFERENCES) {
-      setToast("当前画布的图片与视频参考合计最多 15 个");
+    if (nodes.length >= MAX_PORTABLE_NODES) {
+      setToast(`当前画布最多支持 ${MAX_PORTABLE_NODES} 个节点`);
       return;
     }
     const id = `${kind}-${crypto.randomUUID().slice(0, 8)}`;
@@ -3097,6 +3394,118 @@ function FlowWorkspace() {
     setLastAddedNodeId(id);
     setToast(`${node.data.title}已添加，拖动端口即可连线`);
   };
+
+  const addFlowPreset = useCallback((presetId: FlowPresetId, dropPosition?: { x: number; y: number }) => {
+    const preset = FLOW_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    if (nodes.length + 3 > MAX_PORTABLE_NODES) {
+      setToast(`加入预设后会超过画布 ${MAX_PORTABLE_NODES} 个节点的上限`);
+      return;
+    }
+    const anchor = dropPosition || screenToFlowPosition({
+      x: Math.max(390, window.innerWidth * 0.38),
+      y: Math.max(210, window.innerHeight * 0.32),
+    });
+    const flowId = crypto.randomUUID().slice(0, 8);
+    const referenceId = `reference-${flowId}`;
+    const processorId = `${presetId}-${flowId}`;
+    const outputId = `${presetId}-output-${flowId}`;
+    const referenceNode: GraphNode = {
+      id: referenceId,
+      type: "reference",
+      position: { ...anchor },
+      selected: true,
+      data: { kind: "reference", title: "参考图片" },
+    };
+    let processorNode: GraphNode;
+    let outputNode: GraphNode;
+    if (presetId === "prompt") {
+      processorNode = {
+        id: processorId,
+        type: "codex",
+        position: { x: anchor.x + 440, y: anchor.y - 35 },
+        width: REWRITE_NODE_WIDTH,
+        style: { width: REWRITE_NODE_WIDTH },
+        selected: true,
+        data: { kind: "codex", title: REWRITE_NODE_TITLE, provider: "codex", skillId: "seedance", mode: "全能参考", duration: "4s", ratio: "16:9", instruction: "" },
+      };
+      outputNode = {
+        id: outputId,
+        type: "text",
+        position: { x: anchor.x + 1040, y: anchor.y + 70 },
+        selected: true,
+        data: { kind: "textBox", title: "提示词结果", text: "", prompt: "", source: "等待生成" },
+      };
+    } else if (presetId === "image-generation") {
+      processorNode = {
+        id: processorId,
+        type: "imagegenerator",
+        position: { x: anchor.x + 440, y: anchor.y - 35 },
+        width: REWRITE_NODE_WIDTH,
+        style: { width: REWRITE_NODE_WIDTH },
+        selected: true,
+        data: { kind: "imageGenerator", title: "图片生成", imageProvider: "openrouter", imageModel: "", ratio: "Auto", resolution: "1K", instruction: "" },
+      };
+      outputNode = {
+        id: outputId,
+        type: "reference",
+        position: { x: anchor.x + 1040, y: anchor.y },
+        selected: true,
+        data: { kind: "reference", title: "生成图片" },
+      };
+    } else {
+      processorNode = {
+        id: processorId,
+        type: "videogenerator",
+        position: { x: anchor.x + 440, y: anchor.y - 35 },
+        width: REWRITE_NODE_WIDTH,
+        style: { width: REWRITE_NODE_WIDTH },
+        selected: true,
+        data: { kind: "videoGenerator", title: "视频生成", videoGenerationProvider: "openrouter", videoGenerationModel: "", videoGenerationMode: "multimodal2video", duration: "5", ratio: "16:9", videoGenerationResolution: "720p", generateAudio: true, instruction: "" },
+      };
+      outputNode = {
+        id: outputId,
+        type: "video",
+        position: { x: anchor.x + 1040, y: anchor.y },
+        selected: true,
+        data: { kind: "video", title: "生成视频" },
+      };
+    }
+    const presetNodes = [referenceNode, processorNode, outputNode];
+    const presetEdges: Edge[] = [
+      { id: `edge-${flowId}-reference`, source: referenceId, target: processorId, targetHandle: "media-1", type: "disconnectable" },
+      { id: `edge-${flowId}-output`, source: processorId, target: outputId, type: "disconnectable" },
+    ];
+    setNodes((current) => reconcileRuntimeNodes([
+      ...current.map((node) => node.selected ? { ...node, selected: false } : node),
+      ...presetNodes,
+    ], providerCatalogsRef.current));
+    setEdges((current) => [
+      ...current.map((edge) => edge.selected ? { ...edge, selected: false } : edge),
+      ...presetEdges,
+    ]);
+    setLastAddedNodeId(processorId);
+    setToast(`已加入「${preset.label}」预设：3 个节点、2 条连线、1 个参考位`);
+  }, [nodes, screenToFlowPosition]);
+
+  const handlePresetDragStart = useCallback((event: ReactDragEvent<HTMLButtonElement>, presetId: FlowPresetId) => {
+    event.dataTransfer.setData(FLOW_PRESET_DRAG_TYPE, presetId);
+    event.dataTransfer.effectAllowed = "copy";
+  }, []);
+
+  const handleCanvasPresetDragOver = useCallback((event: ReactDragEvent<HTMLElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes(FLOW_PRESET_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleCanvasPresetDrop = useCallback((event: ReactDragEvent<HTMLElement>) => {
+    const presetId = event.dataTransfer.getData(FLOW_PRESET_DRAG_TYPE);
+    if (!FLOW_PRESETS.some((preset) => preset.id === presetId)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    addFlowPreset(presetId as FlowPresetId, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+  }, [addFlowPreset, screenToFlowPosition]);
 
   const openCanvasProject = useCallback(async (id: string, closeManager = true, skipSave = false) => {
     if (id === projectId) {
@@ -3318,6 +3727,7 @@ function FlowWorkspace() {
     };
     const columnY = new Map<number, number>();
     setNodes((current) => current.map((node) => {
+      if (node.type === "group" || node.parentId) return node;
       const depth = getDepth(node.id);
       const y = columnY.get(depth) || 110;
       const height = node.type === "videogenerator" ? 1080 : node.type === "imagegenerator" ? 820 : node.type === "video" ? 520 : node.type === "reference" ? 460 : node.type === "codex" ? 700 : node.type === "prompteditor" ? 520 : isOutputNodeType(node.type) ? 430 : 270;
@@ -3326,6 +3736,7 @@ function FlowWorkspace() {
       return { ...node, position };
     }));
     window.setTimeout(() => fitView({ padding: 0.12, duration: 350 }), 50);
+    setToast(nodes.some((node) => node.type === "group") ? "已整理未编组节点，群组内部布局保持不变" : "画布节点已整理");
   };
 
   const reset = () => {
@@ -3373,7 +3784,7 @@ function FlowWorkspace() {
           <div className="node-brand"><span>A</span><div><strong>Agent Canvas</strong><small>多 Skill 视觉工作流画板</small></div></div>
         </div>
         <div className="topbar-center"><span className={`bridge-pill ${bridgeState}`}><i />{bridgeState === "ready" ? "Agent 服务已连接" : bridgeState === "checking" ? "检查中" : "Agent 服务未连接"}</span><b>连接节点，组织你的视觉提示词工作流</b></div>
-        <div className="node-actions"><button className="library-button" onClick={toggleLibrary}>节点库</button><button className="task-panel-button" onClick={toggleTaskPanel}>任务{activeTaskCount ? ` ${activeTaskCount}` : ""}</button><button className="file-manager-button" onClick={() => setFileManagerOpen(true)}>文件</button><button className="media-settings-button" onClick={openMediaSettings}>输出目录</button><button className="organize-button" onClick={organize}>整理</button><button className="history-action" title="撤销（Ctrl+Z）" disabled={!canUndo} onClick={undoCanvas}>撤销</button><button className="history-action" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled={!canRedo} onClick={redoCanvas}>重做</button><button className={`top-save ${saveState}`} disabled={!projectId || fileBusy} onClick={() => void saveCurrent()}>{saveState === "saving" ? "保存中…" : saveState === "saved" ? "已保存" : "保存画布"}</button></div>
+        <div className="node-actions"><button className="library-button" onClick={toggleLibrary}>节点库</button><button className="task-panel-button" onClick={toggleTaskPanel}>任务{activeTaskCount ? ` ${activeTaskCount}` : ""}</button><button className="file-manager-button" onClick={() => setFileManagerOpen(true)}>文件</button><label className="theme-selector" title="切换 Agent Canvas 界面主题"><span>主题</span><select aria-label="界面主题" value={themePreference} onChange={(event) => setThemePreference(event.target.value as ThemePreference)}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><button className="media-settings-button" onClick={openMediaSettings}>输出目录</button><button className="organize-button" onClick={organize}>整理</button><button className="history-action" title="撤销（Ctrl+Z）" disabled={!canUndo} onClick={undoCanvas}>撤销</button><button className="history-action" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled={!canRedo} onClick={redoCanvas}>重做</button><button className={`top-save ${saveState}`} disabled={!projectId || fileBusy} onClick={() => void saveCurrent()}>{saveState === "saving" ? "保存中…" : saveState === "saved" ? "已保存" : "保存画布"}</button></div>
         </header>
         <div className="canvas-tabs">
           <div className="canvas-tab-list" role="tablist" aria-label="已打开的画布">
@@ -3467,10 +3878,21 @@ function FlowWorkspace() {
             <button className="palette-card palette-image-generator" onClick={() => addCanvasNode("imagegenerator")}><span className="palette-glyph">生</span><span className="palette-copy"><b>图片生成</b><small>12 图参考与可连接提示词</small></span><i>＋</i></button>
             <button className="palette-card palette-video-generator" onClick={() => addCanvasNode("videogenerator")}><span className="palette-glyph">影</span><span className="palette-copy"><b>视频生成</b><small>三路供应商与 12 位全能参考</small></span><i>＋</i></button>
             <button className="palette-card palette-editor" onClick={() => addCanvasNode("prompteditor")}><span className="palette-glyph">编</span><span className="palette-copy"><b>编辑提示词</b><small>修改意见、原提示词接入与完整输出</small></span><i>＋</i></button>
+            <section className="preset-library" aria-labelledby="preset-library-title">
+              <header><div><strong id="preset-library-title">预设库</strong><span>拖入一段已连线流程</span></div><b>3</b></header>
+              <div className="preset-library-list">
+                {FLOW_PRESETS.map((preset) => (
+                  <button className={`preset-card preset-${preset.id}`} type="button" draggable onDragStart={(event) => handlePresetDragStart(event, preset.id)} onClick={() => addFlowPreset(preset.id)} title={`拖到画布，或点击添加「${preset.label}」`} key={preset.id}>
+                    <span>{preset.glyph}</span><span><b>{preset.label}</b><small>{preset.description}</small></span><i>⋮⋮</i>
+                  </button>
+                ))}
+              </div>
+              <small className="preset-library-note">每个预设仅放入 1 个参考位，不包含真实素材</small>
+            </section>
           </div>
-          <footer className="node-library-foot"><span>{nodes.length} 个节点</span><b>拖动端口建立连接</b></footer>
+          <footer className="node-library-foot"><span>{nodes.length} 个节点</span><b>拖入预设快速搭建</b></footer>
         </aside>
-        <section className="flow-canvas" onMouseMove={(event) => { lastPointerClientRef.current = { x: event.clientX, y: event.clientY }; }}>
+        <section className="flow-canvas" aria-label="Agent Canvas 画布" tabIndex={0} onDragOver={handleCanvasPresetDragOver} onDrop={handleCanvasPresetDrop} onMouseMove={(event) => { lastPointerClientRef.current = { x: event.clientX, y: event.clientY }; }}>
           <ReactFlow
             nodes={renderNodes}
             edges={edges}
@@ -3484,20 +3906,20 @@ function FlowWorkspace() {
             onEdgeContextMenu={onEdgeContextMenu}
             isValidConnection={isValidConnection}
             connectionLineType={ConnectionLineType.Bezier}
-            connectionLineStyle={{ stroke: "#735cc5", strokeWidth: 2.1 }}
+            connectionLineStyle={{ stroke: "var(--edge-color)", strokeWidth: 2.1 }}
             fitView
             fitViewOptions={{ padding: 0.12 }}
             minZoom={0.35}
             maxZoom={1.5}
             deleteKeyCode={null}
             multiSelectionKeyCode="Shift"
-            defaultEdgeOptions={{ type: "disconnectable", interactionWidth: 24, style: { stroke: "#735cc5", strokeWidth: 2.1 } }}
+            defaultEdgeOptions={{ type: "disconnectable", interactionWidth: 24, style: { stroke: "var(--edge-color)", strokeWidth: 2.1 } }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={20} size={1.1} color="#cbc7bf" />
+            <Background variant={BackgroundVariant.Dots} gap={20} size={1.1} color="var(--canvas-dot)" />
             <Controls position="bottom-right" showInteractive={false} />
           </ReactFlow>
-          <div className="canvas-shortcuts-hint" aria-hidden="true"><kbd>Alt</kbd> 拖动复制 <span>·</span> <kbd>Ctrl</kbd> C / V <span>·</span> <kbd>Ctrl</kbd> Z 撤销 <span>·</span> <kbd>Delete</kbd> 删除</div>
+          <div className="canvas-shortcuts-hint" aria-hidden="true"><kbd>Alt</kbd> 拖动复制 <span>·</span> <kbd>Ctrl G</kbd> 编组 <span>·</span> <kbd>Ctrl ⌫</kbd> 解组 <span>·</span> <kbd>Ctrl</kbd> C / V <span>·</span> <kbd>Ctrl</kbd> Z 撤销 <span>·</span> <kbd>Delete</kbd> 删除</div>
           <div className="flow-toast"><i className={bridgeState} />{toast}</div>
         </section>
         <aside className={`task-center ${taskPanelOpen ? "is-open" : "is-closed"}`} aria-label="任务中心">

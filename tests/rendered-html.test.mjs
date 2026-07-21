@@ -26,6 +26,12 @@ test("server-renders the prompt canvas shell", async () => {
 
   const flowSource = await readFile(new URL("../app/FlowCanvas.tsx", import.meta.url), "utf8");
   assert.match(flowSource, /Agent Canvas/);
+  assert.match(flowSource, /type ThemePreference = "light" \| "dark" \| "system"/);
+  assert.match(flowSource, /THEME_STORAGE_KEY = "agent-canvas-theme"/);
+  assert.match(flowSource, /aria-label="界面主题"/);
+  assert.match(flowSource, /<option value="system">跟随系统<\/option>/);
+  assert.match(flowSource, /window\.localStorage\.setItem\(THEME_STORAGE_KEY, themePreference\)/);
+  assert.match(flowSource, /media\.addEventListener\("change", syncTheme\)/);
   assert.match(flowSource, /delete data\.generatedImages/);
   assert.match(flowSource, /delete data\.generatedVideos/);
   assert.match(flowSource, /QuotaExceededError/);
@@ -53,6 +59,22 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /const redoCanvas = useCallback/);
   assert.match(flowSource, /modifier && key === "z"/);
   assert.match(flowSource, /modifier && key === "y"/);
+  assert.match(flowSource, /function CanvasGroupNode/);
+  assert.match(flowSource, /aria-label="重命名群组"/);
+  assert.match(flowSource, /aria-label="群组名称"/);
+  assert.match(flowSource, /nextTitle !== title.*data\.onUpdate/);
+  assert.match(flowSource, /handleClassName="group-resize-handle"/);
+  assert.match(flowSource, /lineClassName="group-resize-line"/);
+  assert.match(flowSource, /const groupSelectedNodes = useCallback/);
+  assert.match(flowSource, /const ungroupSelectedNodes = useCallback/);
+  assert.match(flowSource, /modifier && key === "g"/);
+  assert.match(flowSource, /modifier && event\.key === "Backspace"/);
+  assert.match(flowSource, /parentId: groupId/);
+  assert.match(flowSource, /extent: "parent" as const/);
+  assert.match(flowSource, /expandParent: true/);
+  assert.match(flowSource, /clipboardSelectionNodes/);
+  assert.match(flowSource, /pasteClipboardNodes/);
+  assert.match(flowSource, /"group",[\s\S]*?"reference"/);
   assert.match(flowSource, /MAX_HISTORY_ENTRIES = 50/);
   assert.doesNotMatch(flowSource, />复制结果<\/button>/);
   assert.match(flowSource, /function blockMiddleMouseDownload/);
@@ -169,6 +191,15 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /auto: "自动"/);
   assert.match(flowSource, /思考强度/);
   assert.match(flowSource, /左右连线，支持复制与粘贴/);
+  assert.match(flowSource, /const FLOW_PRESETS/);
+  assert.match(flowSource, /常规提示词/);
+  assert.match(flowSource, /拖入一段已连线流程/);
+  assert.match(flowSource, /targetHandle: "media-1"/);
+  assert.match(flowSource, /handleCanvasPresetDrop/);
+  assert.match(flowSource, /application\/x-agent-canvas-preset/);
+  assert.match(flowSource, /nodes\.length \+ 3 > MAX_PORTABLE_NODES/);
+  assert.doesNotMatch(flowSource, /加入预设后会超过图片或视频节点上限/);
+  assert.doesNotMatch(flowSource, /当前画布最多添加 12 张参考图/);
   assert.match(flowSource, />复制<\/button><button onClick=\{data\.onPaste\}>粘贴</);
   assert.match(flowSource, /taskMode: "revision"/);
   assert.match(flowSource, /节点库/);
@@ -248,6 +279,11 @@ test("server-renders the prompt canvas shell", async () => {
   assert.doesNotMatch(flowSource, /type: "direction"|生成规格/);
 
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /html\[data-theme="dark"\] \{/);
+  assert.match(styles, /--canvas-dot:/);
+  assert.match(styles, /\.theme-selector \{/);
+  assert.match(styles, /html\[data-theme="dark"\] \.core-node/);
+  assert.match(styles, /html\[data-theme="dark"\] \.canvas-group-frame/);
   assert.match(styles, /grid-template-columns: var\(--sidebar-width\)/);
   assert.match(styles, /grid-template-columns: var\(--sidebar-width\) minmax\(0, 1fr\) var\(--task-panel-width\)/);
   assert.match(styles, /\.task-center \{/);
@@ -274,6 +310,13 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(styles, /\.react-flow__node-reference \.image-only-drop \{[^}]*width: 100%;[^}]*height: 100%;[^}]*min-height: 0;/s);
   assert.match(styles, /\.reference-resize-handle/);
   assert.match(styles, /\.media-output-grid\.is-single/);
+  assert.match(styles, /\.preset-library/);
+  assert.match(styles, /\.preset-card:hover/);
+  assert.match(styles, /\.canvas-group-frame/);
+  assert.match(styles, /\.canvas-group-frame\.is-selected/);
+  assert.match(styles, /\.group-resize-handle/);
+  assert.match(styles, /\.group-title-input/);
+  assert.match(styles, /\.group-rename-button/);
   assert.match(styles, /\.image-preview-card:hover \.image-download-float/);
   assert.match(styles, /object-fit: contain/);
   assert.match(styles, /\.node-app\.is-alt-copy/);
@@ -283,6 +326,10 @@ test("server-renders the prompt canvas shell", async () => {
   assert.doesNotMatch(styles, /Cabinet Grotesk|node-library-shell/);
 
   const layoutSource = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
+  assert.match(layoutSource, /agent-canvas-theme/);
+  assert.match(layoutSource, /prefers-color-scheme: dark/);
+  assert.match(layoutSource, /root\.dataset\.theme = dark \? "dark" : "light"/);
+  assert.match(layoutSource, /suppressHydrationWarning/);
   assert.match(layoutSource, /ResizeObserver loop completed with undelivered notifications\./);
   assert.match(layoutSource, /event\.preventDefault\(\)/);
   assert.match(layoutSource, /event\.stopImmediatePropagation\(\)/);
