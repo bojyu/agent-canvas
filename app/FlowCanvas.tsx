@@ -30,6 +30,13 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import {
+  backgroundProjectEventDecision,
+  createCanvasDraft,
+  mergeCanvasDraft,
+  parseCanvasDraft,
+  shouldApplyTaskOutcome,
+} from "./canvas-sync-policy.mjs";
 
 gsap.registerPlugin(useGSAP);
 
@@ -37,6 +44,7 @@ type NodeKind = "reference" | "video" | "textBox" | "codex" | "promptEditor" | "
 type PaletteNodeKind = "reference" | "video" | "text" | "codex" | "prompteditor" | "imagegenerator" | "videogenerator";
 type FlowPresetId = "prompt" | "image-generation" | "video-generation";
 type ThemePreference = "light" | "dark" | "system";
+type ApiKeyName = "OPENROUTER_API_KEY" | "GEMINI_API_KEY" | "COMFLY_API_KEY" | "COMFLY_LLM_API_KEY" | "COMFLY_GPT_IMAGE_2_1K_API_KEY" | "COMFLY_GPT_IMAGE_2_2K_API_KEY" | "COMFLY_GPT_IMAGE_2_4K_API_KEY";
 type MediaSlot = {
   slot: number;
   marker: string;
@@ -106,6 +114,7 @@ type VideoGenerationModelCatalogResponse = {
 };
 type GeneratedVideo = { url: string; mediaType: string; savedPath?: string };
 type MediaOutputSettings = { directory: string; defaultDirectory: string };
+type ApiKeySettings = { configured: Record<ApiKeyName, boolean>; envFile: string };
 type AgentReasoningOption = { reasoningEffort: string; description: string };
 type AgentModelOption = {
   id: string;
@@ -191,13 +200,15 @@ type GraphNode = Node<GraphData>;
 type CanvasProjectSummary = {
   id: string;
   name: string;
+  schemaVersion?: number;
+  revision?: number;
   createdAt: string;
   updatedAt: string;
   referenceCount: number;
   imageCount: number;
   mediaCount?: number;
 };
-type CanvasProject = { id: string; name: string; createdAt: string; updatedAt: string; nodes: GraphNode[]; edges: Edge[] };
+type CanvasProject = { id: string; name: string; schemaVersion?: number; revision?: number; createdAt: string; updatedAt: string; nodes: GraphNode[]; edges: Edge[] };
 type CanvasClipboardPayload = { projectId: string; nodes: GraphNode[] };
 type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 type TaskStage = "queued" | "validating" | "preparing_media" | "codex" | "openrouter" | "comfly" | "grok-build" | "antigravity" | "agent" | "image-generation" | "video-generation" | "writing" | "completed" | "failed" | "cancelled";
@@ -219,6 +230,8 @@ type CanvasTask = {
   reasoningEffort?: string;
   sourceNodeId: string;
   outputNodeIds: string[];
+  origin?: "ui" | "automation" | string;
+  canvasRevision?: number;
   result?: { prompt?: string; changes?: string; title?: string; threadId?: string; skillId?: PromptSkillId; images?: GeneratedImage[]; videos?: GeneratedVideo[]; resolution?: string; aspectRatio?: string; duration?: number; mode?: VideoGenerationMode; jobId?: string; savedFiles?: string[]; outputDirectory?: string; saveError?: string };
   error?: string;
 };
@@ -226,11 +239,29 @@ type TaskEvent =
   | { type: "snapshot"; tasks: CanvasTask[]; concurrency: number }
   | { type: "task"; task: CanvasTask }
   | { type: "config"; concurrency: number };
+type ProjectEvent = {
+  type: "project";
+  projectId: string;
+  revision: number;
+  updatedAt: string;
+  actor: "ui" | "automation" | "automation-task" | string;
+  transactionId?: string | null;
+  project?: CanvasProjectSummary;
+};
 const STORAGE_KEY = "prompt-flow-core-v3";
 const ACTIVE_PROJECT_KEY = "prompt-flow-active-project";
 const OPEN_PROJECTS_KEY = "prompt-flow-open-projects";
 const LIBRARY_STATE_KEY = "prompt-flow-library-open";
 const THEME_STORAGE_KEY = "agent-canvas-theme";
+const API_KEY_FIELDS: { name: ApiKeyName; label: string; description: string; group: "通用渠道" | "Comfly GPT Image 2 专用" }[] = [
+  { name: "OPENROUTER_API_KEY", label: "OpenRouter", description: "提示词、图片和视频模型", group: "通用渠道" },
+  { name: "GEMINI_API_KEY", label: "Google Gemini", description: "Google 官方图片生成", group: "通用渠道" },
+  { name: "COMFLY_API_KEY", label: "Comfly 通用", description: "Nano Banana、视频及其他模型", group: "通用渠道" },
+  { name: "COMFLY_LLM_API_KEY", label: "Comfly 提示词", description: "可选；提示词模型专用", group: "通用渠道" },
+  { name: "COMFLY_GPT_IMAGE_2_1K_API_KEY", label: "GPT Image 2 · 1K", description: "Comfly 1K 分辨率专用", group: "Comfly GPT Image 2 专用" },
+  { name: "COMFLY_GPT_IMAGE_2_2K_API_KEY", label: "GPT Image 2 · 2K", description: "Comfly 2K 分辨率专用", group: "Comfly GPT Image 2 专用" },
+  { name: "COMFLY_GPT_IMAGE_2_4K_API_KEY", label: "GPT Image 2 · 4K", description: "Comfly 4K 分辨率专用", group: "Comfly GPT Image 2 专用" },
+];
 const TASK_PANEL_STATE_KEY = "prompt-flow-task-panel-open";
 const SAVED_TASK_IDS_KEY = "prompt-flow-saved-task-ids";
 const BRIDGE_URL = "http://127.0.0.1:4317";
@@ -1732,11 +1763,11 @@ function reconcileRuntimeNodes(nodes: GraphNode[], catalogs: ProviderCatalogs) {
   return changed ? next : nodes;
 }
 
-async function saveCanvasProject(id: string, name: string, nodes: GraphNode[], edges: Edge[]) {
+async function saveCanvasProject(id: string, name: string, nodes: GraphNode[], edges: Edge[], expectedRevision?: number) {
   return projectApi<{ project: CanvasProjectSummary }>(`/projects/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, nodes: projectNodes(nodes), edges }),
+    body: JSON.stringify({ name, nodes: projectNodes(nodes), edges, ...(expectedRevision ? { expectedRevision } : {}) }),
   });
 }
 
@@ -1768,10 +1799,19 @@ function FlowWorkspace() {
   const [taskPanelOpen, setTaskPanelOpen] = useState(() => typeof window === "undefined" ? true : window.localStorage.getItem(TASK_PANEL_STATE_KEY) !== "false");
   const [toast, setToast] = useState("连接图片或视频到改写节点的参考序号端口");
   const [projectId, setProjectId] = useState("");
+  const [projectRevision, setProjectRevision] = useState(0);
+  const [pendingRemoteRevision, setPendingRemoteRevision] = useState(0);
   const [projectName, setProjectName] = useState("正在载入画布…");
   const [projects, setProjects] = useState<CanvasProjectSummary[]>([]);
   const [openProjectIds, setOpenProjectIds] = useState<string[]>([]);
   const [fileManagerOpen, setFileManagerOpen] = useState(false);
+  const [apiKeySettingsOpen, setApiKeySettingsOpen] = useState(false);
+  const [apiKeySettingsBusy, setApiKeySettingsBusy] = useState(false);
+  const [apiKeySettings, setApiKeySettings] = useState<ApiKeySettings | null>(null);
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Partial<Record<ApiKeyName, string>>>({});
+  const [apiKeyCleared, setApiKeyCleared] = useState<Partial<Record<ApiKeyName, boolean>>>({});
+  const [apiKeyVisible, setApiKeyVisible] = useState<Partial<Record<ApiKeyName, boolean>>>({});
+  const [apiKeySettingsError, setApiKeySettingsError] = useState("");
   const [mediaSettingsOpen, setMediaSettingsOpen] = useState(false);
   const [mediaSettingsBusy, setMediaSettingsBusy] = useState(false);
   const [mediaDirectory, setMediaDirectory] = useState("");
@@ -1794,6 +1834,7 @@ function FlowWorkspace() {
   const savedTaskIds = useRef(new Set<string>());
   const canvasFileInputRef = useRef<HTMLInputElement>(null);
   const projectLoadBusy = useRef(false);
+  const canvasDraftMetaRef = useRef({ projectId: "", projectName: "", projectRevision: 0 });
   const canvasClipboardRef = useRef<CanvasClipboardPayload | null>(null);
   const pasteCountRef = useRef(0);
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
@@ -2059,7 +2100,7 @@ function FlowWorkspace() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAltCopyMode(true);
-      if (fileManagerOpen || mediaSettingsOpen || isEditableTarget(event.target)) return;
+      if (fileManagerOpen || apiKeySettingsOpen || mediaSettingsOpen || isEditableTarget(event.target)) return;
       const modifier = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       if (modifier && key === "z") {
@@ -2169,7 +2210,7 @@ function FlowWorkspace() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, [edges, fileManagerOpen, finishAltDragCopy, groupSelectedNodes, mediaSettingsOpen, nodes, projectId, redoCanvas, screenToFlowPosition, undoCanvas, ungroupSelectedNodes]);
+  }, [apiKeySettingsOpen, edges, fileManagerOpen, finishAltDragCopy, groupSelectedNodes, mediaSettingsOpen, nodes, projectId, redoCanvas, screenToFlowPosition, undoCanvas, ungroupSelectedNodes]);
 
   useGSAP(() => {
     const media = gsap.matchMedia();
@@ -2289,6 +2330,124 @@ function FlowWorkspace() {
     }
   }, [mediaDirectoryDraft, mediaSettingsBusy]);
 
+  const refreshApiKeyProviderCatalogs = useCallback(async () => {
+    await Promise.all([
+      ...(["openrouter", "comfly"] as AgentProvider[]).map(async (provider) => {
+        try {
+          const result = await projectApi<ModelCatalogResponse>(`/models?provider=${provider}`);
+          const configured = (result.provider === undefined || result.provider === provider) && Boolean(result.configured);
+          const nextCatalogs: ProviderCatalogs = {
+            ...providerCatalogsRef.current,
+            [provider]: {
+              configured,
+              loading: false,
+              models: configured ? result.models || [] : [],
+              message: result.message || (!configured ? `${PROVIDER_LABELS[provider]} 尚未配置` : undefined),
+            },
+          };
+          providerCatalogsRef.current = nextCatalogs;
+          setProviderCatalogs(nextCatalogs);
+          setNodes((current) => reconcileRuntimeNodes(current, nextCatalogs));
+        } catch (error) {
+          const nextCatalogs: ProviderCatalogs = {
+            ...providerCatalogsRef.current,
+            [provider]: { configured: false, loading: false, models: [], message: error instanceof Error ? error.message : `无法刷新 ${PROVIDER_LABELS[provider]}` },
+          };
+          providerCatalogsRef.current = nextCatalogs;
+          setProviderCatalogs(nextCatalogs);
+        }
+      }),
+      ...IMAGE_GENERATION_PROVIDER_IDS.map(async (provider) => {
+        try {
+          const result = await projectApi<ImageGenerationModelCatalogResponse>(`/image-models?provider=${provider}`);
+          const configured = result.provider === provider && result.configured;
+          const nextCatalogs: ImageGenerationProviderCatalogs = {
+            ...imageProviderCatalogsRef.current,
+            [provider]: { configured, loading: false, models: configured ? result.models || [] : [], message: result.message },
+          };
+          imageProviderCatalogsRef.current = nextCatalogs;
+          setImageProviderCatalogs(nextCatalogs);
+        } catch (error) {
+          const nextCatalogs: ImageGenerationProviderCatalogs = {
+            ...imageProviderCatalogsRef.current,
+            [provider]: { configured: false, loading: false, models: [], message: error instanceof Error ? error.message : `无法刷新 ${IMAGE_GENERATION_PROVIDER_LABELS[provider]}` },
+          };
+          imageProviderCatalogsRef.current = nextCatalogs;
+          setImageProviderCatalogs(nextCatalogs);
+        }
+      }),
+      ...(["openrouter", "comfly"] as VideoGenerationProvider[]).map(async (provider) => {
+        try {
+          const result = await projectApi<VideoGenerationModelCatalogResponse>(`/video-models?provider=${provider}`);
+          const configured = result.provider === provider && result.configured;
+          const nextCatalogs: VideoGenerationProviderCatalogs = {
+            ...videoGenerationProviderCatalogsRef.current,
+            [provider]: { configured, loading: false, models: configured ? result.models || [] : [], message: result.message },
+          };
+          videoGenerationProviderCatalogsRef.current = nextCatalogs;
+          setVideoGenerationProviderCatalogs(nextCatalogs);
+        } catch (error) {
+          const nextCatalogs: VideoGenerationProviderCatalogs = {
+            ...videoGenerationProviderCatalogsRef.current,
+            [provider]: { configured: false, loading: false, models: [], message: error instanceof Error ? error.message : `无法刷新 ${VIDEO_GENERATION_PROVIDER_LABELS[provider]}` },
+          };
+          videoGenerationProviderCatalogsRef.current = nextCatalogs;
+          setVideoGenerationProviderCatalogs(nextCatalogs);
+        }
+      }),
+    ]);
+  }, []);
+
+  const openApiKeySettings = useCallback(async () => {
+    setApiKeySettingsOpen(true);
+    setApiKeySettingsBusy(true);
+    setApiKeySettingsError("");
+    setApiKeyDrafts({});
+    setApiKeyCleared({});
+    setApiKeyVisible({});
+    try {
+      setApiKeySettings(await projectApi<ApiKeySettings>("/api-key-settings"));
+    } catch (error) {
+      setApiKeySettingsError(error instanceof Error ? error.message : "无法读取 API 密钥配置");
+    } finally {
+      setApiKeySettingsBusy(false);
+    }
+  }, []);
+
+  const saveApiKeySettings = useCallback(async () => {
+    if (apiKeySettingsBusy) return;
+    const changes: Partial<Record<ApiKeyName, string | null>> = {};
+    API_KEY_FIELDS.forEach(({ name }) => {
+      const value = apiKeyDrafts[name]?.trim();
+      if (value) changes[name] = value;
+      else if (apiKeyCleared[name]) changes[name] = null;
+    });
+    if (!Object.keys(changes).length) {
+      setApiKeySettingsOpen(false);
+      setToast("API 密钥没有修改");
+      return;
+    }
+    setApiKeySettingsBusy(true);
+    setApiKeySettingsError("");
+    try {
+      const settings = await projectApi<ApiKeySettings>("/api-key-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ changes }),
+      });
+      setApiKeySettings(settings);
+      setApiKeyDrafts({});
+      setApiKeyCleared({});
+      await refreshApiKeyProviderCatalogs();
+      setApiKeySettingsOpen(false);
+      setToast(`API 密钥已保存到 ${settings.envFile}，渠道状态已刷新`);
+    } catch (error) {
+      setApiKeySettingsError(error instanceof Error ? error.message : "保存 API 密钥失败");
+    } finally {
+      setApiKeySettingsBusy(false);
+    }
+  }, [apiKeyCleared, apiKeyDrafts, apiKeySettingsBusy, refreshApiKeyProviderCatalogs]);
+
   useEffect(() => {
     if (!tasks.some((task) => ACTIVE_TASK_STATUSES.has(task.status))) return;
     const timer = window.setInterval(() => setTaskClock(Date.now()), 1000);
@@ -2299,11 +2458,12 @@ function FlowWorkspace() {
     let cancelled = false;
     async function initializeWorkspace() {
       let initial = freshCanvas();
+      let storedDraft: ReturnType<typeof parseCanvasDraft> = null;
       try {
         const stored = window.localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored) as { nodes?: GraphNode[]; edges?: Edge[] };
-          if (parsed.nodes?.length && parsed.edges) initial = completeCanvas(parsed.nodes, parsed.edges);
+        storedDraft = parseCanvasDraft(stored);
+        if (storedDraft?.nodes?.length && storedDraft.edges) {
+          initial = completeCanvas(storedDraft.nodes as GraphNode[], storedDraft.edges as Edge[]);
         }
       } catch { setToast("旧画布记录无法读取，已载入默认流程"); }
 
@@ -2319,16 +2479,19 @@ function FlowWorkspace() {
           const id = crypto.randomUUID();
           const name = nextCanvasName(summaries);
           const saved = await saveCanvasProject(id, name, initial.nodes, initial.edges);
-          project = { id, name, createdAt: saved.project.createdAt, updatedAt: saved.project.updatedAt, ...initial };
+          project = { id, name, revision: saved.project.revision, createdAt: saved.project.createdAt, updatedAt: saved.project.updatedAt, ...initial };
           summaries = [saved.project];
         }
         if (cancelled) return;
-        suppressDirty.current = true;
-        const completed = completeCanvas(project.nodes, project.edges);
+        const restoreDraft = Boolean(storedDraft?.dirty && (!storedDraft.projectId || storedDraft.projectId === project.id));
+        const restoredGraph = restoreDraft ? mergeCanvasDraft(project, storedDraft) : project;
+        suppressDirty.current = !restoreDraft;
+        const completed = completeCanvas(restoredGraph.nodes as GraphNode[], restoredGraph.edges as Edge[]);
         setNodes(reconcileRuntimeNodes(completed.nodes, providerCatalogsRef.current));
         setEdges(completed.edges);
         setProjectId(project.id);
-        setProjectName(project.name);
+        setProjectRevision(restoreDraft ? storedDraft?.baseRevision || project.revision || 1 : project.revision || 1);
+        setProjectName(restoreDraft && storedDraft?.projectName ? storedDraft.projectName : project.name);
         setProjects(summaries);
         let storedOpenIds: string[] = [];
         try {
@@ -2337,12 +2500,12 @@ function FlowWorkspace() {
         } catch { /* Invalid tab preferences are ignored. */ }
         const validIds = new Set(summaries.map((summary) => summary.id));
         setOpenProjectIds([...new Set([...storedOpenIds.filter((id) => validIds.has(id)), project.id])]);
-        setSaveState("saved");
+        setSaveState(restoreDraft ? "unsaved" : "saved");
         window.localStorage.setItem(ACTIVE_PROJECT_KEY, project.id);
-        setToast(`已打开「${project.name}」`);
+        setToast(restoreDraft ? `已恢复「${project.name}」未保存的本地草稿` : `已打开「${project.name}」`);
       } catch (error) {
         if (cancelled) return;
-        suppressDirty.current = true;
+        suppressDirty.current = false;
         setNodes(reconcileRuntimeNodes(initial.nodes, providerCatalogsRef.current));
         setEdges(initial.edges);
         setProjectName("本地临时画布");
@@ -2468,11 +2631,24 @@ function FlowWorkspace() {
   }, []);
 
   useEffect(() => {
+    canvasDraftMetaRef.current = { projectId, projectName, projectRevision };
+  }, [projectId, projectName, projectRevision]);
+
+  useEffect(() => {
     if (!hydrated) return;
-    if (suppressDirty.current) suppressDirty.current = false;
+    const programmaticUpdate = suppressDirty.current;
+    if (programmaticUpdate) suppressDirty.current = false;
     else setSaveState("unsaved");
     const timer = window.setTimeout(() => {
-      const snapshot = JSON.stringify({ nodes: cleanNodes(nodes), edges });
+      const metadata = canvasDraftMetaRef.current;
+      const snapshot = JSON.stringify(createCanvasDraft({
+        projectId: metadata.projectId,
+        projectName: metadata.projectName,
+        baseRevision: metadata.projectRevision,
+        dirty: !programmaticUpdate,
+        nodes: cleanNodes(nodes),
+        edges,
+      }));
       try {
         window.localStorage.setItem(STORAGE_KEY, snapshot);
       } catch (error) {
@@ -2490,6 +2666,16 @@ function FlowWorkspace() {
   }, [nodes, edges, hydrated]);
 
   useEffect(() => {
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (saveState === "saved") return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [saveState]);
+
+  useEffect(() => {
     if (!hydrated || !openProjectIds.length) return;
     window.localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify(openProjectIds));
   }, [hydrated, openProjectIds]);
@@ -2499,8 +2685,20 @@ function FlowWorkspace() {
     setFileBusy(true);
     setSaveState("saving");
     try {
-      const saved = await saveCanvasProject(projectId, projectName, nodes, edges);
+      const saved = await saveCanvasProject(projectId, projectName, nodes, edges, projectRevision);
       setProjects((current) => [saved.project, ...current.filter((project) => project.id !== saved.project.id)]);
+      const savedRevision = saved.project.revision || projectRevision + 1;
+      setProjectRevision(savedRevision);
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(createCanvasDraft({
+          projectId,
+          projectName,
+          baseRevision: savedRevision,
+          dirty: false,
+          nodes: cleanNodes(nodes),
+          edges,
+        })));
+      } catch { /* The saved filesystem project remains the durable source. */ }
       tasks
         .filter((task) => task.status === "completed" && task.projectId === projectId)
         .forEach((task) => savedTaskIds.current.add(task.id));
@@ -2515,7 +2713,7 @@ function FlowWorkspace() {
       setToast(error instanceof Error ? error.message : "保存画布失败");
       return false;
     } finally { setFileBusy(false); }
-  }, [projectId, projectName, nodes, edges, tasks, fileBusy]);
+  }, [projectId, projectName, nodes, edges, tasks, fileBusy, projectRevision]);
 
   const updateNode = useCallback((id: string, patch: Partial<GraphData>) => {
     setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node));
@@ -2539,6 +2737,14 @@ function FlowWorkspace() {
     if (projectLoadBusy.current) return;
     const belongsToCurrentProject = task.projectId === projectId;
     if (!belongsToCurrentProject) return;
+    if (!shouldApplyTaskOutcome(task)) {
+      if (applyResult && TERMINAL_TASK_STATUSES.has(task.status)) {
+        setToast(task.status === "completed"
+          ? "后台任务已完成并保存，当前画布保持不变"
+          : `后台任务${task.status === "failed" ? "失败" : "已取消"}，当前画布保持不变`);
+      }
+      return;
+    }
     if (task.status === "completed" && applyResult && !appliedTaskIds.current.has(task.id)) {
       if (task.kind === "image-generation" && task.result?.images?.length) {
         appliedTaskIds.current.add(task.id);
@@ -2691,6 +2897,41 @@ function FlowWorkspace() {
       events?.close();
     };
   }, [applyTaskOutcome, applyTaskUpdate, hydrated, projectId]);
+
+  useEffect(() => {
+    if (!hydrated || !projectId) return;
+    let disposed = false;
+    const events = new EventSource(`${BRIDGE_URL}/projects/events`);
+    events.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data) as ProjectEvent | { type: "ready" };
+        if (disposed || message.type !== "project") return;
+        const decision = backgroundProjectEventDecision({
+          event: message,
+          currentProjectId: projectId,
+          currentRevision: projectRevision,
+          pendingRemoteRevision: 0,
+        });
+        if (decision.updateProjectList && message.project) {
+          setProjects((current) => [message.project as CanvasProjectSummary, ...current.filter((item) => item.id !== message.projectId)]);
+        }
+        if (!decision.affectsCurrent || message.revision <= projectRevision) return;
+        setPendingRemoteRevision((current) => backgroundProjectEventDecision({
+          event: message,
+          currentProjectId: projectId,
+          currentRevision: projectRevision,
+          pendingRemoteRevision: current,
+        }).pendingRemoteRevision);
+        setToast(message.actor === "automation-task"
+          ? "后台任务结果已保存；当前编辑内容和视图未被刷新"
+          : `后台画布已更新到 revision ${message.revision}；当前编辑内容保持不变`);
+      } catch { /* Ignore malformed project events and keep the stream alive. */ }
+    };
+    return () => {
+      disposed = true;
+      events.close();
+    };
+  }, [hydrated, projectId, projectRevision]);
 
   const enqueueTask = useCallback(async (payload: Record<string, unknown>, taskMeta: Record<string, unknown>) => {
     const optimisticId = `local-${crypto.randomUUID()}`;
@@ -2848,7 +3089,7 @@ function FlowWorkspace() {
 
   useEffect(() => {
     const handleImagePaste = (event: ClipboardEvent) => {
-      if (fileManagerOpen || mediaSettingsOpen || isEditableTarget(event.target)) return;
+      if (fileManagerOpen || apiKeySettingsOpen || mediaSettingsOpen || isEditableTarget(event.target)) return;
       const selectedImages = nodes.filter((node) => node.selected && node.type === "reference");
       if (selectedImages.length !== 1) return;
       const imageFile = Array.from(event.clipboardData?.items || [])
@@ -2862,7 +3103,7 @@ function FlowWorkspace() {
     };
     window.addEventListener("paste", handleImagePaste);
     return () => window.removeEventListener("paste", handleImagePaste);
-  }, [applyClipboardImage, fileManagerOpen, mediaSettingsOpen, nodes]);
+  }, [apiKeySettingsOpen, applyClipboardImage, fileManagerOpen, mediaSettingsOpen, nodes]);
 
   const runImageGeneration = useCallback(async (nodeId: string) => {
     const imageNode = nodes.find((node) => node.id === nodeId && node.type === "imagegenerator");
@@ -3507,10 +3748,15 @@ function FlowWorkspace() {
     addFlowPreset(presetId as FlowPresetId, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
   }, [addFlowPreset, screenToFlowPosition]);
 
-  const openCanvasProject = useCallback(async (id: string, closeManager = true, skipSave = false) => {
-    if (id === projectId) {
+  const openCanvasProject = useCallback(async (id: string, closeManager = true, skipSave = false, forceReload = false) => {
+    const reloadCurrent = id === projectId && (forceReload || pendingRemoteRevision > projectRevision);
+    if (id === projectId && !reloadCurrent) {
       if (closeManager) setFileManagerOpen(false);
       return true;
+    }
+    if (reloadCurrent && saveState !== "saved") {
+      setToast("当前有未保存编辑，请先保存副本，再载入后台版本");
+      return false;
     }
     if (projectLoadBusy.current) {
       setToast("正在切换画布，请稍候");
@@ -3518,7 +3764,7 @@ function FlowWorkspace() {
     }
     projectLoadBusy.current = true;
     try {
-      if (!skipSave && saveState === "unsaved" && !(await saveCurrent())) return false;
+      if (!skipSave && (saveState === "unsaved" || saveState === "error") && !(await saveCurrent())) return false;
       setFileBusy(true);
       const project = await projectApi<CanvasProject>(`/projects/${id}`);
       suppressDirty.current = true;
@@ -3526,6 +3772,8 @@ function FlowWorkspace() {
       setNodes(reconcileRuntimeNodes(completed.nodes, providerCatalogsRef.current));
       setEdges(completed.edges);
       setProjectId(project.id);
+      setProjectRevision(project.revision || 1);
+      setPendingRemoteRevision(0);
       setProjectName(project.name);
       setOpenProjectIds((current) => current.includes(project.id) ? current : [...current, project.id]);
       setSaveState("saved");
@@ -3541,13 +3789,13 @@ function FlowWorkspace() {
       setFileBusy(false);
       projectLoadBusy.current = false;
     }
-  }, [fitView, projectId, saveCurrent, saveState]);
+  }, [fitView, pendingRemoteRevision, projectId, projectRevision, saveCurrent, saveState]);
 
   const createCanvasProject = useCallback(async () => {
     if (projectLoadBusy.current) return;
     projectLoadBusy.current = true;
     try {
-      if (saveState === "unsaved" && !(await saveCurrent())) return;
+      if ((saveState === "unsaved" || saveState === "error") && !(await saveCurrent())) return;
       setFileBusy(true);
       const fresh = freshCanvas();
       const id = crypto.randomUUID();
@@ -3557,6 +3805,7 @@ function FlowWorkspace() {
       setNodes(reconcileRuntimeNodes(fresh.nodes, providerCatalogsRef.current));
       setEdges(fresh.edges);
       setProjectId(id);
+      setProjectRevision(saved.project.revision || 1);
       setProjectName(name);
       setProjects((current) => [saved.project, ...current]);
       setOpenProjectIds((current) => [...current.filter((openId) => openId !== id), id]);
@@ -3584,7 +3833,7 @@ function FlowWorkspace() {
       setOpenProjectIds(remaining);
       return;
     }
-    if (saveState === "unsaved" && !(await saveCurrent())) return;
+    if ((saveState === "unsaved" || saveState === "error") && !(await saveCurrent())) return;
     const nextId = remaining[Math.min(closingIndex, remaining.length - 1)];
     if (await openCanvasProject(nextId, false, true)) setOpenProjectIds((current) => current.filter((openId) => openId !== id));
   }, [openCanvasProject, openProjectIds, projectId, saveCurrent, saveState]);
@@ -3607,6 +3856,7 @@ function FlowWorkspace() {
       setNodes(reconcileRuntimeNodes(clonedNodes, providerCatalogsRef.current));
       setEdges(clonedEdges);
       setProjectId(id);
+      setProjectRevision(saved.project.revision || 1);
       setProjectName(name);
       setProjects((current) => [saved.project, ...current]);
       setOpenProjectIds((current) => [...current.filter((openId) => openId !== id), id]);
@@ -3654,7 +3904,7 @@ function FlowWorkspace() {
     projectLoadBusy.current = true;
     try {
       if (file.size > MAX_PORTABLE_FILE_BYTES) throw new Error("画布分享文件超过 200MB，无法导入");
-      if (saveState === "unsaved" && !(await saveCurrent())) return;
+      if ((saveState === "unsaved" || saveState === "error") && !(await saveCurrent())) return;
       setFileBusy(true);
       const raw = JSON.parse(await file.text()) as unknown;
       const imported = parsePortableCanvas(raw);
@@ -3667,6 +3917,7 @@ function FlowWorkspace() {
       setNodes(reconcileRuntimeNodes(sanitized.nodes, providerCatalogsRef.current));
       setEdges(sanitized.edges);
       setProjectId(id);
+      setProjectRevision(saved.project.revision || 1);
       setProjectName(name);
       setProjects((current) => [saved.project, ...current]);
       setOpenProjectIds((current) => [...current.filter((openId) => openId !== id), id]);
@@ -3699,7 +3950,10 @@ function FlowWorkspace() {
         body: JSON.stringify({ name: normalized }),
       });
       setProjects((current) => [result.project, ...current.filter((project) => project.id !== id)]);
-      if (id === projectId) setProjectName(result.project.name);
+      if (id === projectId) {
+        setProjectName(result.project.name);
+        setProjectRevision(result.project.revision || projectRevision + 1);
+      }
       setRenamingId("");
       setRenameValue("");
       setToast(`已重命名为「${result.project.name}」`);
@@ -3784,13 +4038,13 @@ function FlowWorkspace() {
           <div className="node-brand"><span>A</span><div><strong>Agent Canvas</strong><small>多 Skill 视觉工作流画板</small></div></div>
         </div>
         <div className="topbar-center"><span className={`bridge-pill ${bridgeState}`}><i />{bridgeState === "ready" ? "Agent 服务已连接" : bridgeState === "checking" ? "检查中" : "Agent 服务未连接"}</span><b>连接节点，组织你的视觉提示词工作流</b></div>
-        <div className="node-actions"><button className="library-button" onClick={toggleLibrary}>节点库</button><button className="task-panel-button" onClick={toggleTaskPanel}>任务{activeTaskCount ? ` ${activeTaskCount}` : ""}</button><button className="file-manager-button" onClick={() => setFileManagerOpen(true)}>文件</button><label className="theme-selector" title="切换 Agent Canvas 界面主题"><span>主题</span><select aria-label="界面主题" value={themePreference} onChange={(event) => setThemePreference(event.target.value as ThemePreference)}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><button className="media-settings-button" onClick={openMediaSettings}>输出目录</button><button className="organize-button" onClick={organize}>整理</button><button className="history-action" title="撤销（Ctrl+Z）" disabled={!canUndo} onClick={undoCanvas}>撤销</button><button className="history-action" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled={!canRedo} onClick={redoCanvas}>重做</button><button className={`top-save ${saveState}`} disabled={!projectId || fileBusy} onClick={() => void saveCurrent()}>{saveState === "saving" ? "保存中…" : saveState === "saved" ? "已保存" : "保存画布"}</button></div>
+        <div className="node-actions"><button className="library-button" onClick={toggleLibrary}>节点库</button><button className="task-panel-button" onClick={toggleTaskPanel}>任务{activeTaskCount ? ` ${activeTaskCount}` : ""}</button><button className="file-manager-button" onClick={() => setFileManagerOpen(true)}>文件</button><button className="api-key-settings-button" onClick={() => void openApiKeySettings()}>API 密钥</button><label className="theme-selector" title="切换 Agent Canvas 界面主题"><span>主题</span><select aria-label="界面主题" value={themePreference} onChange={(event) => setThemePreference(event.target.value as ThemePreference)}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><button className="media-settings-button" onClick={openMediaSettings}>输出目录</button><button className="organize-button" onClick={organize}>整理</button><button className="history-action" title="撤销（Ctrl+Z）" disabled={!canUndo} onClick={undoCanvas}>撤销</button><button className="history-action" title="重做（Ctrl+Shift+Z / Ctrl+Y）" disabled={!canRedo} onClick={redoCanvas}>重做</button>{pendingRemoteRevision > projectRevision && <button className="history-action" title={saveState === "saved" ? "载入后台保存的新版本" : "请先保存或另存当前编辑"} disabled={fileBusy || saveState !== "saved"} onClick={() => void openCanvasProject(projectId, false, true, true)}>后台更新可载入</button>}<button className={`top-save ${saveState}`} disabled={!projectId || fileBusy} onClick={() => void saveCurrent()}>{saveState === "saving" ? "保存中…" : saveState === "saved" ? "已保存" : "保存画布"}</button></div>
         </header>
         <div className="canvas-tabs">
           <div className="canvas-tab-list" role="tablist" aria-label="已打开的画布">
             {openProjects.map((project) => {
               const active = project.id === projectId;
-              const unsaved = active && saveState === "unsaved";
+              const unsaved = active && saveState !== "saved";
               return (
                 <div id={`canvas-tab-${project.id}`} className={`canvas-tab ${active ? "active" : ""} ${unsaved ? "unsaved" : ""}`} key={project.id}>
                   <button className="canvas-tab-main" role="tab" aria-selected={active} aria-controls="canvas-workspace-panel" tabIndex={active ? 0 : -1} disabled={fileBusy} onClick={() => void openCanvasProject(project.id, false)}>
@@ -3810,6 +4064,61 @@ function FlowWorkspace() {
           <input ref={canvasFileInputRef} className="canvas-file-input" type="file" hidden accept=".promptflow.json,.json,application/json" onChange={(event) => void importCanvasFile(event)} />
         </div>
       </div>
+
+      {apiKeySettingsOpen && (
+        <div className="file-manager-backdrop">
+          <section className="api-key-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="api-key-settings-title">
+            <header className="file-manager-head">
+              <div><span>本机凭据</span><h2 id="api-key-settings-title">API 密钥</h2><p>密钥只写入本机 .env.local，不会进入画布、分享文件或浏览器存储。</p></div>
+              <button aria-label="关闭 API 密钥设置" disabled={apiKeySettingsBusy} onClick={() => setApiKeySettingsOpen(false)}>×</button>
+            </header>
+            <div className="api-key-settings-body">
+              {apiKeySettingsBusy && !apiKeySettings && <div className="api-key-settings-loading">正在读取本机配置…</div>}
+              {(["通用渠道", "Comfly GPT Image 2 专用"] as const).map((group) => (
+                <section className="api-key-settings-group" key={group}>
+                  <header><strong>{group}</strong><span>{group === "通用渠道" ? "提示词、图片与视频共用渠道" : "不同分辨率严格使用各自的 Key"}</span></header>
+                  <div className="api-key-field-list">
+                    {API_KEY_FIELDS.filter((field) => field.group === group).map((field) => {
+                      const configured = Boolean(apiKeySettings?.configured[field.name]);
+                      const cleared = Boolean(apiKeyCleared[field.name]);
+                      const draft = apiKeyDrafts[field.name] || "";
+                      return (
+                        <div className={`api-key-field ${configured ? "is-configured" : ""} ${cleared ? "is-cleared" : ""}`} key={field.name}>
+                          <label htmlFor={`api-key-${field.name}`}><span><strong>{field.label}</strong><small>{field.description}</small></span><code>{field.name}</code></label>
+                          <div className="api-key-input-row">
+                            <input
+                              id={`api-key-${field.name}`}
+                              type={apiKeyVisible[field.name] ? "text" : "password"}
+                              autoComplete="new-password"
+                              spellCheck={false}
+                              disabled={apiKeySettingsBusy || cleared}
+                              value={draft}
+                              placeholder={cleared ? "保存后清除" : configured ? "已配置；输入新值可替换" : "粘贴 API Key"}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setApiKeyDrafts((current) => ({ ...current, [field.name]: value }));
+                                if (apiKeyCleared[field.name]) setApiKeyCleared((current) => ({ ...current, [field.name]: false }));
+                              }}
+                            />
+                            <button type="button" disabled={!draft || apiKeySettingsBusy || cleared} onClick={() => setApiKeyVisible((current) => ({ ...current, [field.name]: !current[field.name] }))}>{apiKeyVisible[field.name] ? "隐藏" : "显示"}</button>
+                            <button className="api-key-clear" type="button" disabled={apiKeySettingsBusy || (!configured && !draft && !cleared)} onClick={() => { setApiKeyDrafts((current) => ({ ...current, [field.name]: "" })); setApiKeyCleared((current) => ({ ...current, [field.name]: !current[field.name] })); }}>{cleared ? "撤销" : "清除"}</button>
+                          </div>
+                          <div className="api-key-field-status"><i aria-hidden="true" /><span>{cleared ? "待清除" : configured ? "已配置，真实值不会回显" : "未配置"}</span></div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+              {apiKeySettingsError && <div className="api-key-settings-error" role="alert">{apiKeySettingsError}</div>}
+            </div>
+            <footer className="media-settings-actions api-key-settings-actions">
+              <small>保存文件：{apiKeySettings?.envFile || ".env.local"}</small>
+              <div><button disabled={apiKeySettingsBusy} onClick={() => setApiKeySettingsOpen(false)}>取消</button><button className="primary" disabled={apiKeySettingsBusy} onClick={() => void saveApiKeySettings()}>{apiKeySettingsBusy ? "保存中…" : "保存并刷新渠道"}</button></div>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {mediaSettingsOpen && (
         <div className="file-manager-backdrop">

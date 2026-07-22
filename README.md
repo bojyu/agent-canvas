@@ -1,5 +1,32 @@
 # Agent Canvas
 
+## Codex 插件与语义化自动化
+
+仓库现在包含本地 Codex 插件 `plugins/agent-canvas`。它不模拟鼠标点击，而是通过 MCP 调用 Agent Canvas 的语义化接口：读取紧凑画布、原子增删节点与连线、套用预设、挂载本机素材、查询模型、运行单个生成节点、等待任务并读取输出。插件不会读取或返回 API Key，也不会把图片/视频 Base64 塞进 Codex 上下文。
+
+先启动 Agent Canvas：
+
+```powershell
+npm run dev
+```
+
+然后在 Codex App 中打开本仓库工作区。仓库内的 `.agents/plugins/marketplace.json` 提供 `agent-canvas-local` 本地市场；若插件页尚未出现，重启 Codex App，在 Plugins 页面安装 **Agent Canvas**，再开一个新对话以载入 Skill 和 MCP 工具。
+
+自动化写入使用画布 `revision`、`expectedRevision` 和 `transactionId` 做冲突保护与幂等重试。插件会先 dry-run，再一次性提交整批操作；如果浏览器里还有未保存修改，画板不会静默覆盖，而会提示重新检查版本。由插件提交的提示词、图片和视频任务继续进入原任务中心；即使浏览器关闭，完成结果也会由服务端写回连接的输出节点并保存到输出目录。
+
+后台自动化不会切换、刷新或整图替换当前编辑器。任务中心会持续显示进度；当前项目出现后台新版本时，顶部显示“后台更新可载入”，只有用户主动操作才会读取磁盘版本。未保存的轻量画布草稿会按项目恢复，关闭或刷新页面前也会进行提醒。插件在用户没有明确指定已有画布时，默认新建独立后台画布。
+
+也可以直接使用同一套 CLI：
+
+```powershell
+npm run canvas -- status
+npm run canvas -- projects
+npm run canvas -- inspect <projectId>
+npm run canvas -- preset <projectId> image-generation --expected-revision <revision> --dry-run
+```
+
+完整实施计划和后续阶段见 [`docs/plans/agent-canvas-codex-plugin.md`](docs/plans/agent-canvas-codex-plugin.md)。第一版刻意只执行单个节点；整条 DAG 的依赖调度、成本预算和批量确认将在后续阶段加入，避免一次指令意外触发多次付费生成。
+
 ## OpenRouter Agent SDK（可选）
 
 画板保留原有 Codex SDK 通道，并可通过官方 `@openrouter/agent` SDK 切换到 OpenRouter 模型。OpenRouter 通道会按节点选择加载本机 Seedance 或 Image Skill、处理参考图片（Seedance 还支持视频抽帧），并使用与 Codex 通道相同的任务队列、取消、超时和严格 JSON 输出协议。
@@ -68,7 +95,9 @@ Grok Build 在隔离临时目录中只加载节点当前选择的 Seedance 或 I
 
 “图片生成”节点提供图片模型供应商与模型目录区域，不加载 Skill，也不包含思考强度；可设置常用画幅及 `1K` / `2K` / `4K` 分辨率，并连接最多 12 张参考图。提示词可以直接在节点内编辑，也可由输入文本框或输出文本框接入；连接提示词端口后，节点内文本会跟随上游并锁定编辑。当前支持 OpenRouter、Google 官方 Gemini API 和 Comfly 三个生图渠道；生成结果会在节点内预览，点击预览图即可下载。
 
-图片供应商密钥写入 `.env.local` 后重启画板：
+顶部点击“API 密钥”可以直接配置 OpenRouter、Google Gemini、Comfly 通用/提示词，以及 Comfly GPT Image 2 的 1K、2K、4K 专用密钥。前端只显示“已配置/未配置”，不会读取或回显真实密钥；输入框留空表示保留原值，只有明确点击“清除”并保存才会删除。保存内容只写入本机 `.env.local` 和当前桥接进程，不进入浏览器存储、画布或分享文件，保存后会立即刷新供应渠道，无需重启画板。
+
+也可以继续手动把图片供应商密钥写入 `.env.local`，手动修改后需要重启画板：
 
 ```dotenv
 OPENROUTER_API_KEY=

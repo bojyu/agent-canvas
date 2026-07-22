@@ -26,6 +26,11 @@ test("server-renders the prompt canvas shell", async () => {
 
   const flowSource = await readFile(new URL("../app/FlowCanvas.tsx", import.meta.url), "utf8");
   assert.match(flowSource, /Agent Canvas/);
+  assert.match(flowSource, /API_KEY_FIELDS/);
+  assert.match(flowSource, /className="api-key-settings-button"/);
+  assert.match(flowSource, /\/api-key-settings/);
+  assert.match(flowSource, /保存并刷新渠道/);
+  assert.match(flowSource, /真实值不会回显/);
   assert.match(flowSource, /type ThemePreference = "light" \| "dark" \| "system"/);
   assert.match(flowSource, /THEME_STORAGE_KEY = "agent-canvas-theme"/);
   assert.match(flowSource, /aria-label="界面主题"/);
@@ -277,11 +282,22 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /LIBRARY_STATE_KEY/);
   assert.doesNotMatch(flowSource, /onPointerMove|movePaletteCard/);
   assert.doesNotMatch(flowSource, /type: "direction"|生成规格/);
+  assert.match(flowSource, /backgroundProjectEventDecision/);
+  assert.match(flowSource, /shouldApplyTaskOutcome/);
+  assert.match(flowSource, /beforeunload/);
+  assert.match(flowSource, /后台更新可载入/);
+  const projectEventStart = flowSource.indexOf('new EventSource(`${BRIDGE_URL}/projects/events`)');
+  const projectEventEnd = flowSource.indexOf("const enqueueTask", projectEventStart);
+  assert.ok(projectEventStart > 0 && projectEventEnd > projectEventStart, "project event listener source should be discoverable");
+  const projectEventSource = flowSource.slice(projectEventStart, projectEventEnd);
+  assert.doesNotMatch(projectEventSource, /setNodes\(|setEdges\(|fitView\(|projectApi<CanvasProject>/);
 
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /html\[data-theme="dark"\] \{/);
   assert.match(styles, /--canvas-dot:/);
   assert.match(styles, /\.theme-selector \{/);
+  assert.match(styles, /\.api-key-settings-dialog \{/);
+  assert.match(styles, /\.api-key-field\.is-configured/);
   assert.match(styles, /html\[data-theme="dark"\] \.core-node/);
   assert.match(styles, /html\[data-theme="dark"\] \.canvas-group-frame/);
   assert.match(styles, /grid-template-columns: var\(--sidebar-width\)/);
@@ -335,6 +351,8 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(layoutSource, /event\.stopImmediatePropagation\(\)/);
 
   const bridgeSource = await readFile(new URL("../scripts/codex-bridge.mjs", import.meta.url), "utf8");
+  assert.match(bridgeSource, /pathname === "\/api-key-settings"/);
+  assert.match(bridgeSource, /saveApiKeyChanges\(localEnvPath, payload\.changes\)/);
   assert.match(bridgeSource, /\/projects/);
   assert.match(bridgeSource, /pathname === "\/media-settings"/);
   assert.match(bridgeSource, /attachSavedMedia/);
@@ -347,8 +365,10 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(bridgeSource, /extractVideoFrames/);
   assert.match(bridgeSource, /ffmpeg/);
   assert.match(bridgeSource, /@视频N/);
-  assert.match(bridgeSource, /mediaCount/);
   assert.match(bridgeSource, /\.prompt-flow-data/);
+  assert.match(bridgeSource, /handleAutomationRequest/);
+  assert.match(bridgeSource, /persistAutomationTaskOutcome/);
+  assert.match(bridgeSource, /handleProjectEvents/);
   assert.match(bridgeSource, /const taskStorePath = join\(dataDirectory, "tasks\.json"\)/);
   assert.match(bridgeSource, /let taskConcurrency = 2/);
   assert.match(bridgeSource, /const CODEX_RUN_TIMEOUT_MS = 10 \* 60_000/);
@@ -369,6 +389,16 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(bridgeSource, /projectId: projectId \|\| null/);
   assert.match(bridgeSource, /\(task\.projectId \?\? null\) === meta\.projectId/);
   assert.match(bridgeSource, /projectId: typeof item\.projectId === "string" && validProjectId\(item\.projectId\) \? item\.projectId : null/);
+
+  const projectStoreSource = await readFile(new URL("../scripts/canvas-project-store.mjs", import.meta.url), "utf8");
+  assert.match(projectStoreSource, /mediaCount/);
+  assert.match(projectStoreSource, /CanvasRevisionConflictError/);
+  assert.match(projectStoreSource, /transactionId/);
+
+  const canvasDomainSource = await readFile(new URL("../scripts/canvas-domain.mjs", import.meta.url), "utf8");
+  assert.match(canvasDomainSource, /compactCanvasProject/);
+  assert.match(canvasDomainSource, /buildNodeTaskRequest/);
+  assert.match(canvasDomainSource, /applyTaskResultToProject/);
   assert.match(bridgeSource, /throw new HttpError\(409, `输出节点已有任务/);
   assert.match(bridgeSource, /stage\(onStage, "preparing_media", signal\)/);
   assert.match(bridgeSource, /stage\(onStage, "codex", signal\)/);

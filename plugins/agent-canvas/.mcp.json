@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "agent_canvas": {
+      "command": "node",
+      "args": [
+        "./mcp/server.mjs"
+      ],
+      "cwd": ".",
+      "env": {
+        "AGENT_CANVAS_BASE_URL": "http://127.0.0.1:4317"
+      }
+    }
+  }
+}

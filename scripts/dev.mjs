@@ -6,7 +6,9 @@ const web = fileURLToPath(new URL("./run-vinext.mjs", import.meta.url));
 const localEnv = fileURLToPath(new URL("../.env.local", import.meta.url));
 
 const children = [
-  spawn(process.execPath, [bridge], {
+  // Node watch mode reloads only the bridge and its imported provider modules.
+  // Frontend state stays alive when backend code changes during canvas editing.
+  spawn(process.execPath, ["--watch", bridge], {
     stdio: "inherit",
     env: { ...process.env, PROMPT_CANVAS_ENV_FILE: localEnv },
   }),

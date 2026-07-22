@@ -5,7 +5,7 @@ import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { Codex } from "@openai/codex-sdk";
@@ -58,6 +58,23 @@ import {
   saveGeneratedMedia,
   setMediaOutputDirectory,
 } from "./media-output-store.mjs";
+import { getApiKeySettings, saveApiKeyChanges } from "./api-key-store.mjs";
+import {
+  applyCanvasOperations,
+  applyTaskResultToProject,
+  automationCapabilities,
+  buildNodeTaskRequest,
+  canvasOutputs,
+  compactCanvasProject,
+  compactTask,
+} from "./canvas-domain.mjs";
+import {
+  CanvasProjectStore,
+  CanvasStoreError,
+  canvasProjectSummary,
+  normalizeCanvasProjectName,
+  validCanvasProjectId,
+} from "./canvas-project-store.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const localEnvPath = process.env.PROMPT_CANVAS_ENV_FILE || join(projectRoot, ".env.local");
@@ -226,9 +243,14 @@ const taskPayloads = new Map();
 const taskControllers = new Map();
 const runningTaskIds = new Set();
 const taskEventClients = new Set();
+const projectEventClients = new Set();
 const finishedTaskStatuses = new Set(["completed", "failed", "cancelled"]);
 let taskConcurrency = 2;
 let persistTasksPromise = Promise.resolve();
+const projectStore = new CanvasProjectStore({
+  directory: canvasDirectory,
+  onChange: (event) => broadcastProjectEvent(event),
+});
 
 const outputSchema = {
   type: "object",
@@ -397,34 +419,11 @@ function throwIfAborted(signal) {
 }
 
 function validProjectId(id) {
-  return /^[a-zA-Z0-9-]{8,80}$/.test(id);
-}
-
-function projectPaths(id) {
-  return {
-    canvas: join(canvasDirectory, `${id}.json`),
-    meta: join(canvasDirectory, `${id}.meta.json`),
-  };
-}
-
-function projectName(value) {
-  const name = String(value || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 60);
-  return name || "未命名画布";
+  return validCanvasProjectId(id);
 }
 
 function projectSummary(record) {
-  const referenceNodes = record.nodes.filter((node) => node?.type === "reference" || node?.type === "video");
-  const hasImages = (node) => Boolean(node?.data?.imageData || node?.data?.generatedImages?.length);
-  const hasVideos = (node) => Boolean(node?.data?.videoData || node?.data?.generatedVideos?.length);
-  return {
-    id: record.id,
-    name: record.name,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    referenceCount: referenceNodes.length,
-    imageCount: record.nodes.filter((node) => node?.type === "reference" && hasImages(node)).length,
-    mediaCount: referenceNodes.filter((node) => hasImages(node) || hasVideos(node)).length,
-  };
+  return canvasProjectSummary(record);
 }
 
 async function atomicWrite(path, value) {
@@ -434,50 +433,19 @@ async function atomicWrite(path, value) {
 }
 
 async function readProject(id) {
-  if (!validProjectId(id)) return null;
-  try {
-    return JSON.parse(await readFile(projectPaths(id).canvas, "utf8"));
-  } catch {
-    return null;
-  }
+  return projectStore.readProject(id);
 }
 
 async function listProjects() {
-  await mkdir(canvasDirectory, { recursive: true });
-  const files = await readdir(canvasDirectory, { withFileTypes: true });
-  const summaries = await Promise.all(files
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".meta.json"))
-    .map(async (entry) => {
-      try { return JSON.parse(await readFile(join(canvasDirectory, entry.name), "utf8")); }
-      catch { return null; }
-    }));
-  return summaries.filter(Boolean).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return projectStore.listProjects();
 }
 
-async function saveProject(id, payload) {
-  if (!validProjectId(id)) throw new Error("画布文件 ID 无效");
-  if (!Array.isArray(payload.nodes) || !Array.isArray(payload.edges)) throw new Error("画布数据不完整");
-  await mkdir(canvasDirectory, { recursive: true });
-  const previous = await readProject(id);
-  const now = new Date().toISOString();
-  const record = {
-    id,
-    name: projectName(payload.name || previous?.name),
-    createdAt: previous?.createdAt || now,
-    updatedAt: now,
-    nodes: payload.nodes,
-    edges: payload.edges,
-  };
-  const paths = projectPaths(id);
-  await atomicWrite(paths.canvas, record);
-  await atomicWrite(paths.meta, projectSummary(record));
-  return record;
+async function saveProject(id, payload, options = {}) {
+  return projectStore.saveProject(id, payload, options);
 }
 
 async function renameProject(id, name) {
-  const record = await readProject(id);
-  if (!record) return null;
-  return saveProject(id, { ...record, name: projectName(name) });
+  return projectStore.renameProject(id, name);
 }
 
 async function handleProjectRequest(request, response, pathname) {
@@ -498,7 +466,11 @@ async function handleProjectRequest(request, response, pathname) {
     return true;
   }
   if (request.method === "PUT") {
-    const record = await saveProject(id, await readJson(request));
+    const payload = await readJson(request);
+    const record = await saveProject(id, payload, {
+      expectedRevision: payload.expectedRevision,
+      actor: String(payload.actor || "ui"),
+    });
     sendJson(response, 200, { project: projectSummary(record) });
     return true;
   }
@@ -1217,7 +1189,9 @@ function taskSummary(task) {
     reasoningEffort: task.reasoningEffort,
     sourceNodeId: task.sourceNodeId,
     outputNodeIds: [...task.outputNodeIds],
+    origin: task.origin || "ui",
   };
+  if (task.canvasRevision) summary.canvasRevision = task.canvasRevision;
   if (task.startedAt) summary.startedAt = task.startedAt;
   if (task.finishedAt) summary.finishedAt = task.finishedAt;
   if (task.result) summary.result = task.result;
@@ -1239,6 +1213,13 @@ function broadcastTaskEvent(event) {
   for (const response of taskEventClients) {
     try { writeTaskEvent(response, event); }
     catch { taskEventClients.delete(response); }
+  }
+}
+
+function broadcastProjectEvent(event) {
+  for (const response of projectEventClients) {
+    try { writeTaskEvent(response, event); }
+    catch { projectEventClients.delete(response); }
   }
 }
 
@@ -1313,6 +1294,25 @@ async function backfillCompletedMediaOutputs() {
     updateTask(task, { result });
   }
   await persistTasks();
+}
+
+async function persistAutomationTaskOutcome(task) {
+  if (!task.persistResult || !task.projectId || (task.status !== "completed" && task.status !== "failed")) return;
+  try {
+    const saved = await projectStore.mutateProject(
+      task.projectId,
+      (project) => applyTaskResultToProject(project, task),
+      { actor: "automation-task", transactionId: `task:${task.id}` },
+    );
+    updateTask(task, { canvasRevision: saved.revision });
+  } catch (error) {
+    updateTask(task, {
+      result: {
+        ...(task.result || {}),
+        canvasSaveError: error instanceof Error ? error.message : "任务结果无法写回画布",
+      },
+    });
+  }
 }
 
 function startTask(task) {
@@ -1403,6 +1403,7 @@ function startTask(task) {
           reasoningEffort: result.reasoningEffort,
         },
       });
+      await persistAutomationTaskOutcome(task);
     } catch (error) {
       if (controller.signal.aborted || task.status === "cancelled") {
         if (task.status !== "cancelled") {
@@ -1415,6 +1416,7 @@ function startTask(task) {
           finishedAt: new Date().toISOString(),
           error: taskErrorMessage(error),
         });
+        await persistAutomationTaskOutcome(task);
       }
     } finally {
       runningTaskIds.delete(task.id);
@@ -1463,6 +1465,8 @@ function normalizeTaskMeta(value) {
     title: String(value.title || (value.kind === "revision" ? "编辑提示词" : value.kind === "image-generation" ? "图片生成" : value.kind === "video-generation" ? "视频生成" : "编辑改写")).trim().slice(0, 80),
     sourceNodeId: value.sourceNodeId.trim(),
     outputNodeIds: [...new Set(value.outputNodeIds.map((id) => id.trim()).filter(Boolean))],
+    persistResult: value.persistResult === true,
+    origin: value.origin === "automation" ? "automation" : "ui",
   };
 }
 
@@ -1501,6 +1505,8 @@ function enqueueTask(payload) {
     reasoningEffort: String(payload.reasoningEffort || "default"),
     sourceNodeId: meta.sourceNodeId,
     outputNodeIds: meta.outputNodeIds,
+    persistResult: meta.persistResult,
+    origin: meta.origin,
   };
   taskRecords.set(task.id, task);
   taskPayloads.set(task.id, { ...payload, provider, ...(skillId ? { skillId } : {}), taskMeta: undefined });
@@ -1598,6 +1604,12 @@ async function handleTaskRequest(request, response, pathname) {
     return true;
   }
   const match = pathname.match(/^\/tasks\/([a-f0-9-]+)$/i);
+  if (request.method === "GET" && match) {
+    const task = taskRecords.get(match[1]);
+    if (!task) throw new HttpError(404, "没有找到这个任务");
+    sendJson(response, 200, { task: taskSummary(task) });
+    return true;
+  }
   if (request.method === "DELETE" && match) {
     const task = taskRecords.get(match[1]);
     if (!task) throw new HttpError(404, "没有找到这个任务");
@@ -1630,6 +1642,251 @@ async function handleDirectRefine(request, response) {
   }
 }
 
+function automationErrorStatus(error) {
+  if (error instanceof CanvasStoreError || error instanceof HttpError) return error.status;
+  return /不能为空|不支持|无效|必须|最多|需要|没有找到|尚未配置|未配置/.test(String(error?.message || "")) ? 400 : 500;
+}
+
+async function hydrateAutomationModel(request) {
+  const { payload, taskMeta } = request;
+  if (taskMeta.kind === "image-generation") {
+    const status = getImageGenerationProviderStatus(payload.provider);
+    if (!status.configured) throw new HttpError(400, status.message || `${payload.provider} 尚未配置`);
+    const selected = status.models.find((item) => item.model === payload.model) || status.models[0];
+    if (!selected) throw new HttpError(400, `${payload.provider} 暂无可用图片模型`);
+    payload.model = selected.model;
+    const resolutions = selected.supportedResolutions?.length ? selected.supportedResolutions : ["1K", "2K", "4K"];
+    if (!resolutions.includes(payload.resolution)) payload.resolution = resolutions[0];
+    return request;
+  }
+  if (taskMeta.kind === "video-generation") {
+    const status = await getVideoGenerationProviderStatus(payload.provider);
+    if (!status.configured) throw new HttpError(400, status.message || `${payload.provider} 尚未配置`);
+    const selected = status.models.find((item) => item.model === payload.model) || status.models[0];
+    if (!selected) throw new HttpError(400, `${payload.provider} 暂无可用视频模型`);
+    payload.model = selected.model;
+    if (selected.supportedResolutions?.length && !selected.supportedResolutions.includes(payload.resolution)) payload.resolution = selected.supportedResolutions[0];
+    if (selected.supportedDurations?.length && !selected.supportedDurations.includes(Number(payload.duration))) payload.duration = selected.supportedDurations[0];
+    return request;
+  }
+  const provider = normalizeProvider(payload.provider);
+  payload.provider = provider;
+  const catalog = await automationPromptCatalog(provider);
+  if (!catalog.configured) throw new HttpError(400, catalog.message || `${provider} 尚未配置`);
+  const models = catalog.models;
+  const selected = models.find((item) => item.model === payload.model || item.id === payload.model)
+    || models.find((item) => item.isDefault)
+    || models[0];
+  if (!selected) throw new HttpError(400, `${provider} 暂无可用文本模型`);
+  payload.model = selected.model;
+  const efforts = selected.supportedReasoningEfforts || [];
+  if (efforts.length && !efforts.some((item) => item.reasoningEffort === payload.reasoningEffort)) {
+    payload.reasoningEffort = selected.defaultReasoningEffort || efforts[0].reasoningEffort;
+  }
+  return request;
+}
+
+async function automationPromptCatalog(provider) {
+  const id = normalizeProvider(provider);
+  if (id === OPENROUTER_PROVIDER_ID && !openRouterConfigured()) {
+    return { provider: id, configured: false, models: [], message: "OpenRouter 尚未配置" };
+  }
+  if (id === COMFLY_LLM_PROVIDER_ID && !comflyLlmConfigured()) {
+    return { provider: id, configured: false, models: [], message: "Comfly 提示词通道尚未配置" };
+  }
+  if (id === GROK_BUILD_PROVIDER_ID) {
+    const status = await getGrokBuildStatus();
+    return { provider: id, configured: status.ready, models: status.ready ? status.models : [], message: status.message };
+  }
+  if (id === ANTIGRAVITY_PROVIDER_ID) {
+    const status = await getAntigravityStatus();
+    return { provider: id, configured: status.ready, models: status.ready ? status.models : [], message: status.message };
+  }
+  return { provider: id, configured: true, models: await providerModels(id) };
+}
+
+async function automationModelCatalog(kind, provider) {
+  const normalizedKind = String(kind || "prompt").trim().toLowerCase();
+  if (normalizedKind === "image") {
+    const id = String(provider || "openrouter").trim().toLowerCase();
+    if (!IMAGE_GENERATION_PROVIDER_IDS.includes(id)) throw new HttpError(400, `不支持的图片生成供应商：${id}`);
+    return getImageGenerationProviderStatus(id);
+  }
+  if (normalizedKind === "video") {
+    const id = String(provider || "openrouter").trim().toLowerCase();
+    if (!VIDEO_GENERATION_PROVIDER_IDS.includes(id)) throw new HttpError(400, `不支持的视频生成供应商：${id}`);
+    return getVideoGenerationProviderStatus(id);
+  }
+  return automationPromptCatalog(provider);
+}
+
+const automationMediaTypes = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".avif": "image/avif",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".m4v": "video/x-m4v",
+};
+
+async function attachAutomationMedia(projectId, payload) {
+  const filePath = resolve(String(payload.filePath || ""));
+  if (!isAbsolute(filePath) || !String(payload.filePath || "").trim()) throw new HttpError(400, "filePath 必须是绝对路径");
+  const mediaType = automationMediaTypes[extname(filePath).toLowerCase()];
+  if (!mediaType) throw new HttpError(400, "只支持常见图片或视频文件");
+  const info = await stat(filePath);
+  if (!info.isFile()) throw new HttpError(400, "filePath 不是文件");
+  const maxBytes = mediaType.startsWith("image/") ? 20 * 1024 * 1024 : 200 * 1024 * 1024;
+  if (info.size > maxBytes) throw new HttpError(400, `${mediaType.startsWith("image/") ? "图片" : "视频"}文件过大`);
+  const dataUrl = `data:${mediaType};base64,${(await readFile(filePath)).toString("base64")}`;
+  const saved = await projectStore.mutateProject(projectId, (project) => {
+    const index = project.nodes.findIndex((node) => node.id === payload.nodeId);
+    if (index < 0) throw new CanvasStoreError(404, "没有找到目标节点", "NODE_NOT_FOUND");
+    const node = project.nodes[index];
+    const expectedType = mediaType.startsWith("image/") ? "reference" : "video";
+    if (node.type !== expectedType) throw new HttpError(400, `${expectedType === "reference" ? "图片" : "视频"}文件必须写入对应媒体节点`);
+    const data = { ...node.data, fileName: basename(filePath) };
+    if (expectedType === "reference") {
+      data.imageData = dataUrl;
+      delete data.generatedImages;
+      delete data.imageError;
+    } else {
+      data.videoData = dataUrl;
+      delete data.generatedVideos;
+      delete data.videoGenerationError;
+    }
+    project.nodes[index] = { ...node, data };
+    return project;
+  }, {
+    expectedRevision: payload.expectedRevision,
+    actor: "automation",
+    transactionId: payload.transactionId || `media:${randomUUID()}`,
+  });
+  return { project: compactCanvasProject(saved), node: compactCanvasProject(saved).nodes.find((node) => node.id === payload.nodeId) };
+}
+
+async function handleProjectEvents(request, response, pathname) {
+  if (request.method !== "GET" || pathname !== "/projects/events") return false;
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  response.flushHeaders?.();
+  projectEventClients.add(response);
+  writeTaskEvent(response, { type: "ready", at: new Date().toISOString() });
+  const heartbeat = setInterval(() => {
+    if (!response.destroyed && !response.writableEnded) response.write(": heartbeat\n\n");
+  }, 15_000);
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    projectEventClients.delete(response);
+  };
+  request.once("close", cleanup);
+  response.once("close", cleanup);
+  return true;
+}
+
+async function handleAutomationRequest(request, response, requestUrl) {
+  const { pathname } = requestUrl;
+  if (!pathname.startsWith("/automation")) return false;
+
+  if (request.method === "GET" && pathname === "/automation/status") {
+    sendJson(response, 200, {
+      ready: true,
+      name: "Agent Canvas",
+      version: "0.1.0",
+      canvasUrl: "http://127.0.0.1:4173",
+      bridgeUrl: `http://127.0.0.1:${PORT}`,
+      projects: (await listProjects()).length,
+      capabilities: automationCapabilities(),
+    });
+    return true;
+  }
+  if (request.method === "GET" && pathname === "/automation/capabilities") {
+    sendJson(response, 200, automationCapabilities());
+    return true;
+  }
+  if (request.method === "GET" && pathname === "/automation/projects") {
+    sendJson(response, 200, { projects: await listProjects() });
+    return true;
+  }
+  if (request.method === "POST" && pathname === "/automation/projects") {
+    const payload = await readJson(request);
+    const id = String(payload.id || randomUUID());
+    const base = { id, name: normalizeCanvasProjectName(payload.name), nodes: [], edges: [] };
+    const prepared = payload.presetId
+      ? applyCanvasOperations(base, [{ op: "apply_preset", presetId: payload.presetId, position: payload.position }]).project
+      : base;
+    const created = await projectStore.createProject({ id, name: prepared.name, nodes: prepared.nodes, edges: prepared.edges, actor: "automation" });
+    sendJson(response, 201, { project: compactCanvasProject(created) });
+    return true;
+  }
+  if (request.method === "GET" && pathname === "/automation/models") {
+    sendJson(response, 200, await automationModelCatalog(requestUrl.searchParams.get("kind"), requestUrl.searchParams.get("provider")));
+    return true;
+  }
+  const taskMatch = pathname.match(/^\/automation\/tasks\/([a-f0-9-]+)$/i);
+  if (request.method === "GET" && taskMatch) {
+    const task = taskRecords.get(taskMatch[1]);
+    if (!task) throw new HttpError(404, "没有找到这个任务");
+    sendJson(response, 200, { task: compactTask(taskSummary(task)) });
+    return true;
+  }
+  const inspectMatch = pathname.match(/^\/automation\/projects\/([a-zA-Z0-9-]+)\/inspect$/);
+  if (request.method === "GET" && inspectMatch) {
+    const project = await readProject(inspectMatch[1]);
+    if (!project) throw new CanvasStoreError(404, "没有找到这个画布", "PROJECT_NOT_FOUND");
+    sendJson(response, 200, { project: compactCanvasProject(project) });
+    return true;
+  }
+  const outputsMatch = pathname.match(/^\/automation\/projects\/([a-zA-Z0-9-]+)\/outputs$/);
+  if (request.method === "GET" && outputsMatch) {
+    const project = await readProject(outputsMatch[1]);
+    if (!project) throw new CanvasStoreError(404, "没有找到这个画布", "PROJECT_NOT_FOUND");
+    sendJson(response, 200, { projectId: project.id, revision: project.revision, outputs: canvasOutputs(project) });
+    return true;
+  }
+  const transactionMatch = pathname.match(/^\/automation\/projects\/([a-zA-Z0-9-]+)\/transactions$/);
+  if (request.method === "POST" && transactionMatch) {
+    const payload = await readJson(request);
+    const result = await projectStore.applyTransaction(transactionMatch[1], payload);
+    sendJson(response, 200, {
+      project: result.summary,
+      changes: result.changes,
+      duplicate: result.duplicate,
+      dryRun: result.dryRun,
+      ...(result.dryRun ? { preview: compactCanvasProject(result.project) } : {}),
+    });
+    return true;
+  }
+  const mediaMatch = pathname.match(/^\/automation\/projects\/([a-zA-Z0-9-]+)\/media$/);
+  if (request.method === "POST" && mediaMatch) {
+    sendJson(response, 200, await attachAutomationMedia(mediaMatch[1], await readJson(request)));
+    return true;
+  }
+  const runMatch = pathname.match(/^\/automation\/projects\/([a-zA-Z0-9-]+)\/nodes\/([^/]+)\/run$/);
+  if (request.method === "POST" && runMatch) {
+    const payload = await readJson(request);
+    const project = await readProject(runMatch[1]);
+    if (!project) throw new CanvasStoreError(404, "没有找到这个画布", "PROJECT_NOT_FOUND");
+    if (payload.expectedRevision !== undefined && Number(payload.expectedRevision) !== Number(project.revision)) {
+      throw new CanvasStoreError(409, `画布版本冲突：当前 revision 为 ${project.revision}`, "REVISION_CONFLICT");
+    }
+    const compiled = await hydrateAutomationModel(buildNodeTaskRequest(project, decodeURIComponent(runMatch[2]), payload.overrides));
+    const task = enqueueTask({ ...compiled.payload, taskMeta: compiled.taskMeta });
+    sendJson(response, 202, { task: compactTask(task) });
+    return true;
+  }
+  sendJson(response, 404, { error: "未找到 Agent Canvas 自动化接口" });
+  return true;
+}
+
 const server = createServer(async (request, response) => {
   setCors(request, response);
 
@@ -1650,6 +1907,25 @@ const server = createServer(async (request, response) => {
     sendJson(response, 500, { error: error instanceof Error ? error.message : "无法读取本地媒体文件" });
     return;
   }
+  if (pathname === "/api-key-settings") {
+    try {
+      if (request.method === "GET") {
+        sendJson(response, 200, getApiKeySettings(localEnvPath));
+        return;
+      }
+      if (request.method === "PUT") {
+        const payload = await readJson(request);
+        sendJson(response, 200, await saveApiKeyChanges(localEnvPath, payload.changes));
+        return;
+      }
+      sendJson(response, 405, { error: "API 密钥设置只支持 GET 和 PUT" });
+    } catch (error) {
+      sendJson(response, error instanceof HttpError ? error.status : 400, {
+        error: error instanceof Error ? error.message : "无法保存 API 密钥设置",
+      });
+    }
+    return;
+  }
   if (pathname === "/media-settings") {
     try {
       if (request.method === "GET") {
@@ -1668,9 +1944,19 @@ const server = createServer(async (request, response) => {
     return;
   }
   try {
+    if (await handleProjectEvents(request, response, pathname)) return;
+    if (await handleAutomationRequest(request, response, requestUrl)) return;
+  } catch (error) {
+    sendJson(response, automationErrorStatus(error), {
+      error: error instanceof Error ? error.message : "Agent Canvas 自动化操作失败",
+      ...(error?.code ? { code: error.code } : {}),
+    });
+    return;
+  }
+  try {
     if (await handleProjectRequest(request, response, pathname)) return;
   } catch (error) {
-    sendJson(response, 500, { error: error instanceof Error ? error.message : "画布文件操作失败" });
+    sendJson(response, automationErrorStatus(error), { error: error instanceof Error ? error.message : "画布文件操作失败" });
     return;
   }
   try {

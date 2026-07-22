@@ -15,7 +15,10 @@ export const IMAGE_GENERATION_ASPECT_RATIOS = Object.freeze([
 ]);
 
 const MAX_REFERENCE_IMAGES = 12;
-const DEFAULT_TIMEOUT_MS = 3 * 60_000;
+// High-resolution generations can legitimately take several minutes on relay
+// providers. Keep the request alive long enough for a 4K synchronous response
+// instead of aborting a provider job that may already have been billed.
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 
 const MODEL_CATALOGS = Object.freeze({
   openrouter: Object.freeze([
@@ -492,7 +495,10 @@ export async function runImageGeneration(rawRequest, {
       usage: result?.usage || null,
     };
   } catch (error) {
-    if (timeoutController.signal.aborted && !signal?.aborted) throw new Error("图片生成超过 3 分钟，已停止等待");
+    if (timeoutController.signal.aborted && !signal?.aborted) {
+      const timeoutMinutes = Math.max(1, Math.ceil(timeoutMs / 60_000));
+      throw new Error(`图片生成超过 ${timeoutMinutes} 分钟，已停止等待`);
+    }
     throw error;
   } finally {
     clearTimeout(timeout);

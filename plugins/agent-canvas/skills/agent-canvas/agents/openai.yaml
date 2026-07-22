@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Canvas"
+  short_description: "Build and run visual AI workflows in Agent Canvas"
+  default_prompt: "Use $agent-canvas to build a connected image-generation workflow and validate it before running."

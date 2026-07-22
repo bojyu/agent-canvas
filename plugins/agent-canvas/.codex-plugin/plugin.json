@@ -1,0 +1,39 @@
+{
+  "name": "agent-canvas",
+  "version": "0.1.0+codex.20260722084821",
+  "description": "Build and run local visual AI workflows from Codex through Agent Canvas.",
+  "author": {
+    "name": "bojyu",
+    "url": "https://github.com/bojyu"
+  },
+  "homepage": "https://github.com/bojyu/agent-canvas",
+  "repository": "https://github.com/bojyu/agent-canvas",
+  "keywords": [
+    "canvas",
+    "workflow",
+    "image-generation",
+    "video-generation",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Canvas",
+    "shortDescription": "Build and run visual AI workflows directly from Codex.",
+    "longDescription": "Agent Canvas lets Codex inspect, assemble, connect, validate, and run local prompt, image, and video workflows through revision-safe semantic tools. Generation tasks stay visible in the Agent Canvas task center and write their outputs back to connected nodes even when the browser is closed.",
+    "developerName": "bojyu",
+    "category": "Productivity",
+    "capabilities": [
+      "Visual workflow authoring",
+      "Prompt, image, and video generation",
+      "Atomic canvas transactions",
+      "Task progress and output retrieval"
+    ],
+    "brandColor": "#6F56D9",
+    "defaultPrompt": [
+      "Build an image-generation workflow in Agent Canvas.",
+      "Inspect my Agent Canvas and improve its wiring.",
+      "Run the configured video node and monitor its task."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
