@@ -52,8 +52,12 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /function duplicatedNode/);
   assert.match(flowSource, /delete data\.threadId/);
   assert.match(flowSource, /不包含连线/);
-  assert.doesNotMatch(flowSource, /clipboard\.edges/);
-  assert.doesNotMatch(flowSource, /const copiedEdges = edges/);
+  assert.match(flowSource, /clipboard\.edges \|\| \[\]/);
+  assert.match(flowSource, /const copiedEdges = clipboardSelectionEdges\(edges, copiedNodes\)/);
+  assert.match(flowSource, /function clipboardSelectionEdges/);
+  assert.match(flowSource, /function pasteClipboardEdges/);
+  assert.match(flowSource, /copiedIds\.has\(edge\.source\) && copiedIds\.has\(edge\.target\)/);
+  assert.match(flowSource, /previewEdgeIds/);
   assert.match(flowSource, /altDragCopyStateRef/);
   assert.match(flowSource, /finishAltDragCopy/);
   assert.match(flowSource, /原节点和连线保持原位/);
@@ -216,6 +220,11 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /粘贴剪贴板图片/);
   assert.match(flowSource, /window\.addEventListener\("paste", handleImagePaste\)/);
   assert.match(flowSource, /剪贴板图片超过 15MB/);
+  assert.match(flowSource, /onDrop=\{handleImageFileDrop\}/);
+  assert.match(flowSource, /Array\.from\(event\.dataTransfer\.files\)/);
+  assert.match(flowSource, /className=\{imageDropActive \? "is-image-drop-active" : ""\}/);
+  assert.match(flowSource, /const selectedNodes = nodes\.filter\(\(node\) => node\.selected\);\s*if \(selectedNodes\.length === 1 && selectedNodes\[0\]\.type === "reference"\) return;/s);
+  assert.match(flowSource, /选中节点后按 Ctrl\+V 粘贴/);
   assert.match(flowSource, /className="image-preview-card"/);
   assert.match(flowSource, /className="image-download-float nodrag nopan"/);
   assert.match(flowSource, /onClick=\{\(event\) => event\.stopPropagation\(\)\}/);
@@ -334,6 +343,7 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(styles, /\.group-title-input/);
   assert.match(styles, /\.group-rename-button/);
   assert.match(styles, /\.image-preview-card:hover \.image-download-float/);
+  assert.match(styles, /\.core-node\.is-image-drop-active::after/);
   assert.match(styles, /object-fit: contain/);
   assert.match(styles, /\.node-app\.is-alt-copy/);
   assert.match(styles, /\.canvas-shortcuts-hint/);

@@ -209,7 +209,7 @@ type CanvasProjectSummary = {
   mediaCount?: number;
 };
 type CanvasProject = { id: string; name: string; schemaVersion?: number; revision?: number; createdAt: string; updatedAt: string; nodes: GraphNode[]; edges: Edge[] };
-type CanvasClipboardPayload = { projectId: string; nodes: GraphNode[] };
+type CanvasClipboardPayload = { projectId: string; nodes: GraphNode[]; edges?: Edge[] };
 type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 type TaskStage = "queued" | "validating" | "preparing_media" | "codex" | "openrouter" | "comfly" | "grok-build" | "antigravity" | "agent" | "image-generation" | "video-generation" | "writing" | "completed" | "failed" | "cancelled";
 type CanvasTaskKind = "generation" | "revision" | "image-generation" | "video-generation";
@@ -341,6 +341,7 @@ const LEGACY_REWRITE_TITLES = new Set([
 const MAX_REWRITE_IMAGES = 9;
 const MAX_REWRITE_VIDEOS = 3;
 const MAX_IMAGE_GENERATION_IMAGES = 12;
+const MAX_IMAGE_UPLOAD_BYTES = 15 * 1024 * 1024;
 const MAX_VIDEO_GENERATION_REFERENCES = 12;
 const MAX_REWRITE_REFERENCES = MAX_REWRITE_IMAGES + MAX_REWRITE_VIDEOS;
 const ACTIVE_TASK_STATUSES = new Set<TaskStatus>(["queued", "running"]);
@@ -503,9 +504,9 @@ const defaultEdges: Edge[] = [
   { id: "codex-output", source: "codex", target: "output", type: "disconnectable" },
 ];
 
-function NodeFrame({ data, tone, children, input = false, inputHandleId, output = true, onDoubleClick }: { data: GraphData; tone: string; children: ReactNode; input?: boolean; inputHandleId?: string; output?: boolean; onDoubleClick?: (event: ReactMouseEvent<HTMLElement>) => void }) {
+function NodeFrame({ data, tone, children, input = false, inputHandleId, output = true, className = "", onDoubleClick, onDragEnter, onDragOver, onDragLeave, onDrop }: { data: GraphData; tone: string; children: ReactNode; input?: boolean; inputHandleId?: string; output?: boolean; className?: string; onDoubleClick?: (event: ReactMouseEvent<HTMLElement>) => void; onDragEnter?: (event: ReactDragEvent<HTMLElement>) => void; onDragOver?: (event: ReactDragEvent<HTMLElement>) => void; onDragLeave?: (event: ReactDragEvent<HTMLElement>) => void; onDrop?: (event: ReactDragEvent<HTMLElement>) => void }) {
   return (
-    <article className={`core-node tone-${tone}`} onDoubleClick={onDoubleClick}>
+    <article className={`core-node tone-${tone}${className ? ` ${className}` : ""}`} onDoubleClick={onDoubleClick} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       {input && <Handle id={inputHandleId} type="target" position={Position.Left} className="main-handle" />}
       <header className="core-node-head">
         <div><span>{data.kind === "reference" || data.kind === "imageOutput" ? "图片" : data.kind === "video" || data.kind === "videoOutput" ? "视频" : data.kind === "textBox" || data.kind === "textInput" || data.kind === "textOutput" ? "文本框" : data.kind === "codex" ? "编辑改写" : data.kind === "promptEditor" ? "编辑提示词" : data.kind === "imageGenerator" ? "图片生成" : data.kind === "videoGenerator" ? "视频生成" : "文本框"}</span><strong>{data.title}</strong></div>
@@ -519,17 +520,57 @@ function NodeFrame({ data, tone, children, input = false, inputHandleId, output 
 
 function ReferenceNode({ data, selected }: NodeProps<GraphNode>) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > 15 * 1024 * 1024) {
-      event.target.value = "";
+  const [imageDropActive, setImageDropActive] = useState(false);
+  const loadImageFile = (file: File) => {
+    const isImage = file.type.startsWith("image/") || /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+    if (!isImage) {
+      data.onUpdate?.({ imageError: "仅支持拖入图片文件" });
+      return;
+    }
+    if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+      data.onUpdate?.({ imageError: "图片超过 15MB，无法载入" });
       return;
     }
     const reader = new FileReader();
     reader.onload = () => data.onUpdate?.({ fileName: file.name, preview: String(reader.result), imageData: String(reader.result), generatedImages: undefined, imageError: undefined, generationMeta: undefined });
+    reader.onerror = () => data.onUpdate?.({ imageError: "图片读取失败，请重新拖入或上传" });
     reader.readAsDataURL(file);
+  };
+  const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    loadImageFile(file);
     event.target.value = "";
+  };
+  const handleImageFileDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setImageDropActive(true);
+  };
+  const handleImageFileDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  };
+  const handleImageFileDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    event.stopPropagation();
+    if (event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) return;
+    setImageDropActive(false);
+  };
+  const handleImageFileDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setImageDropActive(false);
+    const imageFile = Array.from(event.dataTransfer.files).find((file) => file.type.startsWith("image/") || /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name));
+    if (!imageFile) {
+      data.onUpdate?.({ imageError: "拖入内容中没有可用的图片文件" });
+      return;
+    }
+    loadImageFile(imageFile);
   };
   const handleDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
     if (data.busy || (event.target as HTMLElement).closest("button, a, input, label, [role='button']")) return;
@@ -556,7 +597,18 @@ function ReferenceNode({ data, selected }: NodeProps<GraphNode>) {
         handleClassName="reference-resize-handle"
         lineClassName="reference-resize-line"
       />
-      <NodeFrame data={data} tone="image" input output onDoubleClick={handleDoubleClick}>
+      <NodeFrame
+        data={data}
+        tone="image"
+        input
+        output
+        className={imageDropActive ? "is-image-drop-active" : ""}
+        onDoubleClick={handleDoubleClick}
+        onDragEnter={handleImageFileDragEnter}
+        onDragOver={handleImageFileDragOver}
+        onDragLeave={handleImageFileDragLeave}
+        onDrop={handleImageFileDrop}
+      >
         {displayImages.length ? (
           <div className={`image-generation-result-grid media-output-grid nodrag ${displayImages.length === 1 ? "is-single" : "is-multiple"}`}>
             {displayImages.map((image, index) => (
@@ -567,7 +619,7 @@ function ReferenceNode({ data, selected }: NodeProps<GraphNode>) {
               </div>
             ))}
           </div>
-        ) : <div className="media-output-empty">{data.busy ? "图片任务执行中，结果会自动写入这里。" : "双击节点上传图片，也可以粘贴剪贴板图片或连接图片生成节点。"}</div>}
+        ) : <div className="media-output-empty">{data.busy ? "图片任务执行中，结果会自动写入这里。" : "拖入本地图片，双击节点上传图片，或选中节点后按 Ctrl+V 粘贴。"}</div>}
         <div className="media-input-actions nodrag">
           <label className="media-replace-button">上传 / 替换图片<input ref={fileInputRef} type="file" accept="image/*" hidden onChange={handleFile} /></label>
           <button type="button" className="media-replace-button" onClick={data.onPaste}>粘贴剪贴板图片</button>
@@ -1248,9 +1300,20 @@ function clipboardSelectionNodes(nodes: GraphNode[]) {
   ];
 }
 
-function pasteClipboardNodes(copiedNodes: GraphNode[], offset: { x: number; y: number }) {
+function clipboardSelectionEdges(edges: Edge[], copiedNodes: GraphNode[]) {
+  if (copiedNodes.length <= 1) return [];
   const copiedIds = new Set(copiedNodes.map((node) => node.id));
-  const idMap = new Map(copiedNodes.map((node) => [node.id, `${node.type || "node"}-${crypto.randomUUID().slice(0, 8)}`]));
+  return edges
+    .filter((edge) => copiedIds.has(edge.source) && copiedIds.has(edge.target))
+    .map((edge) => ({ ...edge, selected: false }));
+}
+
+function clipboardNodeIdMap(copiedNodes: GraphNode[]) {
+  return new Map(copiedNodes.map((node) => [node.id, `${node.type || "node"}-${crypto.randomUUID().slice(0, 8)}`]));
+}
+
+function pasteClipboardNodes(copiedNodes: GraphNode[], offset: { x: number; y: number }, idMap = clipboardNodeIdMap(copiedNodes)) {
+  const copiedIds = new Set(copiedNodes.map((node) => node.id));
   return copiedNodes.map((node) => {
     const copiedParentId = node.parentId && copiedIds.has(node.parentId) ? node.parentId : undefined;
     const position = copiedParentId
@@ -1268,6 +1331,21 @@ function pasteClipboardNodes(copiedNodes: GraphNode[], offset: { x: number; y: n
       delete copy.expandParent;
     }
     return copy;
+  });
+}
+
+function pasteClipboardEdges(copiedEdges: Edge[], idMap: Map<string, string>) {
+  return copiedEdges.flatMap((edge) => {
+    const source = idMap.get(edge.source);
+    const target = idMap.get(edge.target);
+    if (!source || !target) return [];
+    return [{
+      ...edge,
+      id: `edge-${crypto.randomUUID().slice(0, 8)}`,
+      source,
+      target,
+      selected: false,
+    }];
   });
 }
 
@@ -1841,6 +1919,7 @@ function FlowWorkspace() {
   const altDragCopyActiveRef = useRef(false);
   const altDragCopyStateRef = useRef<{
     pairs: { originalId: string; copyId: string; originalPosition: { x: number; y: number } }[];
+    previewEdgeIds: string[];
   } | null>(null);
   const undoStackRef = useRef<CanvasHistorySnapshot[]>([]);
   const redoStackRef = useRef<CanvasHistorySnapshot[]>([]);
@@ -1887,13 +1966,24 @@ function FlowWorkspace() {
       });
     });
     const copyToOriginalId = new Map(copyState.pairs.map((pair) => [pair.copyId, pair.originalId]));
-    setEdges((current) => current.map((edge) => ({
-      ...edge,
-      source: copyToOriginalId.get(edge.source) || edge.source,
-      target: copyToOriginalId.get(edge.target) || edge.target,
-    })));
+    const originalToCopyId = new Map(copyState.pairs.map((pair) => [pair.originalId, pair.copyId]));
+    const previewEdgeIds = new Set(copyState.previewEdgeIds);
+    setEdges((current) => current.map((edge) => previewEdgeIds.has(edge.id)
+      ? {
+          ...edge,
+          source: originalToCopyId.get(edge.source) || edge.source,
+          target: originalToCopyId.get(edge.target) || edge.target,
+          selected: false,
+        }
+      : {
+          ...edge,
+          source: copyToOriginalId.get(edge.source) || edge.source,
+          target: copyToOriginalId.get(edge.target) || edge.target,
+        }));
     setLastAddedNodeId(copyState.pairs[0]?.copyId || "");
-    setToast(`已复制 ${copyState.pairs.length} 个独立节点，原节点和连线保持原位`);
+    setToast(copyState.previewEdgeIds.length
+      ? `已复制 ${copyState.pairs.length} 个节点及 ${copyState.previewEdgeIds.length} 条内部连线，原内容保持原位`
+      : `已复制 ${copyState.pairs.length} 个独立节点，原节点和连线保持原位`);
   }, []);
   const providerOptions = useMemo<ProviderRuntimeOption[]>(() => PROVIDERS.map((provider) => ({
     provider,
@@ -2133,20 +2223,27 @@ function FlowWorkspace() {
       if (modifier && key === "c") {
         const copiedNodes = clipboardSelectionNodes(nodes);
         if (!copiedNodes.length) return;
+        const copiedEdges = clipboardSelectionEdges(edges, copiedNodes);
         canvasClipboardRef.current = {
           projectId,
           nodes: copiedNodes,
+          edges: copiedEdges,
         };
         pasteCountRef.current = 0;
         event.preventDefault();
         const groupCount = copiedNodes.filter((node) => node.type === "group").length;
+        const edgeSummary = copiedNodes.length === 1
+          ? "，单节点不复制连线"
+          : `，已包含 ${copiedEdges.length} 条内部连线`;
         setToast(groupCount
-          ? `已复制 ${groupCount} 个群组及其 ${copiedNodes.length - groupCount} 个节点，不包含连线`
-          : `已复制 ${copiedNodes.length} 个节点，不包含连线`);
+          ? `已复制 ${groupCount} 个群组及其 ${copiedNodes.length - groupCount} 个节点${edgeSummary}`
+          : `已复制 ${copiedNodes.length} 个节点${edgeSummary}`);
         return;
       }
 
       if (modifier && key === "v") {
+        const selectedNodes = nodes.filter((node) => node.selected);
+        if (selectedNodes.length === 1 && selectedNodes[0].type === "reference") return;
         const clipboard = canvasClipboardRef.current;
         if (!clipboard?.nodes.length) return;
         event.preventDefault();
@@ -2166,13 +2263,18 @@ function FlowWorkspace() {
         const cascade = pasteCountRef.current * 22;
         const offsetX = pointer ? pointer.x - minX + cascade : cascade;
         const offsetY = pointer ? pointer.y - minY + cascade : cascade;
-        const pastedNodes = pasteClipboardNodes(clipboard.nodes, { x: offsetX, y: offsetY });
+        const idMap = clipboardNodeIdMap(clipboard.nodes);
+        const pastedNodes = pasteClipboardNodes(clipboard.nodes, { x: offsetX, y: offsetY }, idMap);
+        const pastedEdges = pasteClipboardEdges(clipboard.edges || [], idMap);
         setNodes((current) => [...current.map((node) => node.selected ? { ...node, selected: false } : node), ...pastedNodes]);
+        setEdges((current) => [...current.map((edge) => edge.selected ? { ...edge, selected: false } : edge), ...pastedEdges]);
         setLastAddedNodeId(pastedNodes[0]?.id || "");
         const pastedGroupCount = pastedNodes.filter((node) => node.type === "group").length;
         setToast(pastedGroupCount
-          ? `已粘贴 ${pastedGroupCount} 个独立群组，不包含连线`
-          : `已粘贴 ${pastedNodes.length} 个独立节点`);
+          ? `已粘贴 ${pastedGroupCount} 个独立群组及 ${pastedEdges.length} 条内部连线`
+          : pastedNodes.length === 1
+            ? "已粘贴 1 个独立节点，不包含连线"
+            : `已粘贴 ${pastedNodes.length} 个独立节点及 ${pastedEdges.length} 条内部连线`);
         return;
       }
 
@@ -3055,7 +3157,7 @@ function FlowWorkspace() {
 
   const applyClipboardImage = useCallback(async (nodeId: string, blob: Blob, fileName?: string) => {
     if (!blob.type.startsWith("image/")) throw new Error("剪贴板内容不是图片");
-    if (blob.size > 15 * 1024 * 1024) throw new Error("剪贴板图片超过 15MB，无法载入");
+    if (blob.size > MAX_IMAGE_UPLOAD_BYTES) throw new Error("剪贴板图片超过 15MB，无法载入");
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
@@ -3090,14 +3192,14 @@ function FlowWorkspace() {
   useEffect(() => {
     const handleImagePaste = (event: ClipboardEvent) => {
       if (fileManagerOpen || apiKeySettingsOpen || mediaSettingsOpen || isEditableTarget(event.target)) return;
-      const selectedImages = nodes.filter((node) => node.selected && node.type === "reference");
-      if (selectedImages.length !== 1) return;
+      const selectedNodes = nodes.filter((node) => node.selected);
+      if (selectedNodes.length !== 1 || selectedNodes[0].type !== "reference") return;
       const imageFile = Array.from(event.clipboardData?.items || [])
         .find((item) => item.kind === "file" && item.type.startsWith("image/"))
         ?.getAsFile();
       if (!imageFile) return;
       event.preventDefault();
-      void applyClipboardImage(selectedImages[0].id, imageFile, imageFile.name || undefined)
+      void applyClipboardImage(selectedNodes[0].id, imageFile, imageFile.name || undefined)
         .then(() => setToast("剪贴板图片已粘贴到选中的图片节点"))
         .catch((error) => setToast(error instanceof Error ? error.message : "剪贴板图片读取失败"));
     };
@@ -3490,12 +3592,21 @@ function FlowWorkspace() {
     }
     altDragCopyActiveRef.current = true;
     const idMap = new Map(sourceNodes.map((node) => [node.id, `${node.type || "node"}-${crypto.randomUUID().slice(0, 8)}`]));
+    const internalEdges = sourceNodes.length > 1
+      ? edges.filter((edge) => sourceIds.has(edge.source) && sourceIds.has(edge.target))
+      : [];
+    const previewEdges = internalEdges.map((edge) => ({
+      ...edge,
+      id: `edge-${crypto.randomUUID().slice(0, 8)}`,
+      selected: false,
+    }));
     altDragCopyStateRef.current = {
       pairs: sourceNodes.map((node) => ({
         originalId: node.id,
         copyId: idMap.get(node.id) || `${node.type || "node"}-${crypto.randomUUID().slice(0, 8)}`,
         originalPosition: { ...node.position },
       })),
+      previewEdgeIds: previewEdges.map((edge) => edge.id),
     };
     const stationaryCopies = sourceNodes.map((node) => {
       const copy = duplicatedNode(node, idMap.get(node.id), node.position, false);
@@ -3503,13 +3614,16 @@ function FlowWorkspace() {
       return copy;
     });
     setNodes((current) => [...current, ...stationaryCopies]);
-    setEdges((current) => current.map((edge) => ({
-      ...edge,
-      source: idMap.get(edge.source) || edge.source,
-      target: idMap.get(edge.target) || edge.target,
-    })));
+    setEdges((current) => [
+      ...current.map((edge) => ({
+        ...edge,
+        source: idMap.get(edge.source) || edge.source,
+        target: idMap.get(edge.target) || edge.target,
+      })),
+      ...previewEdges,
+    ]);
     setToast("正在拖动新副本，原节点和连线会保持原位");
-  }, [altCopyMode, nodes]);
+  }, [altCopyMode, edges, nodes]);
   const onNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, draggedNode: GraphNode) => {
     finishAltDragCopy(draggedNode);
   }, [finishAltDragCopy]);

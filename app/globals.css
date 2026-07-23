@@ -355,6 +355,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Shared nodes */
 .core-node { --node-accent: var(--primary); width: 236px; overflow: visible; border: 1px solid #d6d1c8; border-radius: 14px; background: rgba(255, 254, 250, .98); box-shadow: 0 12px 28px rgba(42, 37, 32, .09); }
+.core-node.is-image-drop-active { position: relative; border-color: #9a6e58; box-shadow: 0 0 0 3px rgba(143, 110, 94, .15), 0 16px 34px rgba(63, 48, 41, .16); }
+.core-node.is-image-drop-active::after { content: "松开上传到此图片节点"; display: grid; place-items: center; position: absolute; z-index: 20; inset: 8px; border: 2px dashed rgba(143, 110, 94, .72); border-radius: 11px; color: #704f40; background: rgba(255, 250, 246, .92); backdrop-filter: blur(5px); font-size: 11px; font-weight: 750; letter-spacing: .02em; pointer-events: none; }
 .tone-image { --node-accent: #8f6e5e; width: 100%; }
 .tone-video { --node-accent: #4f7f8f; width: 100%; height: 100%; }
 .tone-codex { --node-accent: var(--primary); width: 100% !important; min-width: 520px; box-sizing: border-box; }
@@ -847,6 +849,8 @@ html[data-theme="dark"] .video-generation-run:disabled { color: #8ca0a2; backgro
 html[data-theme="dark"] .media-output-status span { color: #dda47e; background: #3b2b23; }
 html[data-theme="dark"] .tone-video-output .media-output-status span { color: #8cc6cc; background: #20383b; }
 html[data-theme="dark"] .media-output-empty { color: #aa9a90; border-color: #54463c; background: #27211e; }
+html[data-theme="dark"] .core-node.is-image-drop-active { border-color: #c79d87; box-shadow: 0 0 0 3px rgba(199, 157, 135, .16), 0 16px 34px rgba(0, 0, 0, .38); }
+html[data-theme="dark"] .core-node.is-image-drop-active::after { color: #ebc4b0; border-color: rgba(199, 157, 135, .72); background: rgba(38, 31, 29, .92); }
 html[data-theme="dark"] .tone-video-output .media-output-empty { color: #91a8ab; border-color: #365459; background: #1e2a2c; }
 html[data-theme="dark"] .output-status span { color: #8fd0a3; background: #22372a; }
 html[data-theme="dark"] .text-box-actions button { color: #c6bbf8; border-color: #50476c; background: #29253b; }
