@@ -41,7 +41,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Agent Canvas · 多 Skill 视觉工作流画板",
-  description: "用节点流程编排 Seedance 视频提示词与 Image 图像提示词的生成和修改。",
+  description: "用节点流程编排 Seedance、Nano Banana 与 GPT Image 提示词的生成和修改。",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

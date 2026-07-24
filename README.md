@@ -29,7 +29,7 @@ npm run canvas -- preset <projectId> image-generation --expected-revision <revis
 
 ## OpenRouter Agent SDK（可选）
 
-画板保留原有 Codex SDK 通道，并可通过官方 `@openrouter/agent` SDK 切换到 OpenRouter 模型。OpenRouter 通道会按节点选择加载本机 Seedance 或 Image Skill、处理参考图片（Seedance 还支持视频抽帧），并使用与 Codex 通道相同的任务队列、取消、超时和严格 JSON 输出协议。
+画板保留原有 Codex SDK 通道，并可通过官方 `@openrouter/agent` SDK 切换到 OpenRouter 模型。OpenRouter 通道会按节点选择加载本机 Seedance 或 Image Skill，也可选择“不加载 Skill”；它会处理参考图片（Seedance 和无 Skill 模式还支持视频抽帧），并使用与 Codex 通道相同的任务队列、取消、超时和严格 JSON 输出协议。
 
 1. 把 `.env.example` 复制为 `.env.local`。
 2. 在 `.env.local` 中填写 `OPENROUTER_API_KEY`，不要把真实密钥写进代码、画布或分享文件。
@@ -75,7 +75,7 @@ Provider 行为说明：模型列表、思考强度和任务阶段都跟随节�
 5. 重启 `npm run dev`，画板选供应商 **Antigravity**；或检查  
    `http://127.0.0.1:4317/models?provider=antigravity` 是否 `configured: true`。
 
-说明：任务在隔离临时目录运行，只预载节点当前选择的 Seedance 或 Image skill；参考图会复制到 `media/`。请勿用第三方工具转发 Google OAuth（有封号风险）。若必须临时回退到仍可用的 API Key 版 Gemini CLI，需自行设置 `ALLOW_GEMINI_CLI_FALLBACK=1`（默认关闭）。
+说明：任务在隔离临时目录运行，只预载节点当前选择的 Seedance 或 Image skill；选择“不加载 Skill”时隔离目录中不会写入 Skill。参考图会复制到 `media/`。请勿用第三方工具转发 Google OAuth（有封号风险）。若必须临时回退到仍可用的 API Key 版 Gemini CLI，需自行设置 `ALLOW_GEMINI_CLI_FALLBACK=1`（默认关闭）。
 
 ## Grok Build 订阅通道（可选）
 
@@ -87,9 +87,9 @@ grok login
 
 请使用拥有 SuperGrok 或 X Premium Plus 的账号登录。画板会从 `grok models` 读取该订阅实际可用的模型，并通过 ACP 明确选择 `cached_token`；不会自动回退到 `XAI_API_KEY`。为避免误走按量 API 计费，Grok Build 子进程会清除 API Key 环境变量，并在检测到 `config.toml` 中的 `model.api_key`、`model.env_key` 或外部认证命令时拒绝运行。
 
-Grok Build 在隔离临时目录中只加载节点当前选择的 Seedance 或 Image Skill，参考图片和 Seedance 视频抽帧通过 ACP 图片块发送。临时登录副本、Skill 和素材上下文会在任务结束后删除；画布与分享文件不会保存 Grok 登录凭证。
+Grok Build 在隔离临时目录中只加载节点当前选择的 Seedance 或 Image Skill；选择“不加载 Skill”时目录内不放入 Skill。参考图片和视频抽帧通过 ACP 图片块发送。临时登录副本、Skill 和素材上下文会在任务结束后删除；画布与分享文件不会保存 Grok 登录凭证。
 
-面向视频与图像生成的本地节点式提示词画板。左侧可伸缩节点库可以添加“图片、视频、文本框、编辑改写、图片生成、视频生成、编辑提示词”七类节点，并通过端口自由组成流程。编辑改写节点可选择 Seedance 视频提示词或 Image 图像提示词；Seedance 的参考位会自动编号为 `@图片1` 到 `@图片9`、`@视频1` 到 `@视频3`，Image 只接收参考图片。
+面向视频与图像生成的本地节点式提示词画板。左侧可伸缩节点库可以添加“图片、视频、文本框、编辑改写、图片生成、视频生成、编辑提示词”七类节点，并通过端口自由组成流程。编辑改写节点可选择不加载 Skill、Seedance、Nano Banana、GPT Image 或真实感场景提示词；Seedance 与无 Skill 模式的参考位会自动编号为 `@图片1` 到 `@图片9`、`@视频1` 到 `@视频3`，图像提示词 Skill 只接收参考图片。
 
 节点库下方提供“预设库”。可以把“常规提示词”“图片生成”或“视频生成”预设直接拖到画布指定位置，也可以点击后添加到画布中心。每个预设一次创建 3 个已连线节点，只放入 1 个空白参考图片节点：常规提示词连接到编辑改写与文本框，图片生成连接到图片生成与图片输出，视频生成连接到视频生成与视频输出。预设不会包含真实素材，也不会自动发起任务。图片与视频节点可在画布中按需添加；“最多 12 个参考位”等容量限制只作用于单个生成或改写节点的输入连接，不会把输出预览节点误计为整张画布的参考容量。
 
@@ -148,7 +148,7 @@ npm run dev
 
 参考图片和视频以文件内容形式包含在分享文件中，素材越多，导出的 JSON 文件越大；单个分享文件的导入上限为 200MB。打开外来文件时会检查文件版本、节点类型、节点与连线 ID、坐标、素材格式和连线引用；无效或不受支持的文件不会写入本地画布库。
 
-编辑改写节点和编辑提示词节点都可以先选择 `Seedance 视频提示词`、`Image 图像提示词` 或 `真实感场景与模特图` Skill，再选择 `Codex`、`OpenRouter`、`Comfly`、`Grok Build` 或 `Antigravity` 及其实时模型。Comfly 会把所选 Skill 的核心规则和按任务路由的白名单参考文档一并注入请求；由于中转模型能力不统一，思考强度显示为“自动”，结构化结果会在本地再次校验。“思考强度”只显示该模型支持的档位；切换 Skill、供应商、模型或思考强度会清除不兼容的会话标识。旧画布没有 `skillId` 时默认按 Seedance 兼容，没有 `provider` 时按 Codex 兼容。
+编辑改写节点和编辑提示词节点都可以先选择 `不加载 Skill`、`Seedance 视频提示词`、`Nano Banana 图像提示词`、`GPT Image 图像提示词` 或 `真实感场景与模特图`，再选择 `Codex`、`OpenRouter`、`Comfly`、`Grok Build` 或 `Antigravity` 及其实时模型。`不加载 Skill` 只按节点内容与参考素材做通用生成/修改，不读取 Skill 文件、不挂载 Skill 工具，也不注入模型专用模板。Nano Banana 与 GPT Image 两个入口复用同一个本机 Image Skill，但分别锁定自然语言结构与五段式结构，避免模型在改写时自行选错适配版本。Comfly 会把所选 Skill 的核心规则、对应模型规则和按任务路由的白名单参考文档一并注入请求；无 Skill 模式则只发送通用 JSON 约束。由于中转模型能力不统一，思考强度显示为“自动”，结构化结果会在本地再次校验。“思考强度”只显示该模型支持的档位；切换 Skill、供应商、模型或思考强度会清除不兼容的会话标识。旧画布没有 `skillId` 时默认按 Seedance 兼容，没有 `provider` 时按 Codex 兼容。
 
 创作需求只在编辑改写节点自己的提示词输入框中填写。选择 Seedance 时可连接图片和视频参考，并设置参考模式、时长和画幅；选择 Image 或真实感场景 Skill 时只接收图片参考并设置目标画幅。真实感 Skill 会先读取参考库总索引，再按办公室、居家办公、创意工作室、卧室或电竞房路由一个场景分类，优先检查结构、透视、人物重心、接触、光影与材质。图片生成节点不加载 Skill，只负责把上游或节点内的最终提示词、参考图、画幅和分辨率提交给所选生图渠道。
 
@@ -196,5 +196,5 @@ npm run dev
 - 视频生成节点选择 OpenRouter 或 Comfly 后，会发送提示词及所连接的原始图片/视频参考，并把任务 ID 和结果链接写回节点；选择 Seedance CLI 时，素材只会临时落盘供本机 `dreamina` 上传，任务结束后立即删除临时副本。视频生成节点不调用提示词 Skill。
 - 选择 Grok Build 时，提示词、参考图片和视频帧会通过本机官方 CLI 的 ACP 接口发送给 xAI，并使用 `grok login` 对应账号的订阅额度。画板强制 cached-token 模式；检测到可能抢占认证的 API Key 配置会停止任务并明确提示。
 - 点击生成或提交只会先向本地 `POST /tasks` 创建任务；任务真正开始运行时才调用所选 Agent。排队任务取消后不会产生模型调用。
-- 所有通道都只加载节点明确选择的 Seedance、Image 或真实感场景 Skill；若所选 Skill 不存在，改写接口会直接停止，不会退化为普通提示词生成。OpenRouter 只能读取对应 Skill 的白名单参考文档；Grok Build 与 Antigravity 使用只包含所选完整 Skill Bundle 的隔离工作区，并禁用工具、Web、插件、MCP 与子 Agent。真实感 Skill 默认从项目同级目录 `真实感skill/photoreal_scene_model_skill/SKILL.md` 读取，也可以用 `PHOTOREAL_SKILL_PATH` 指向 Skill 根目录或 `SKILL.md`。
+- 所有通道都只加载节点明确选择的 Seedance、Nano Banana、GPT Image 或真实感场景 Skill；选择“不加载 Skill”时不会读取、复制或注入任何 Skill。Nano Banana 与 GPT Image 共用本机 Image Skill 文件，但只预载各自的模型规则。若明确选择的 Skill 不存在，改写接口会直接停止，不会静默退化；只有用户主动选择“不加载 Skill”才走通用提示词路径。OpenRouter 只能读取对应 Skill 的白名单参考文档；Grok Build 与 Antigravity 使用只包含所选完整 Skill Bundle 的隔离工作区，无 Skill 模式则创建不含 Skill 的隔离工作区，并禁用工具、Web、插件、MCP 与子 Agent。真实感 Skill 默认从项目同级目录 `真实感skill/photoreal_scene_model_skill/SKILL.md` 读取，也可以用 `PHOTOREAL_SKILL_PATH` 指向 Skill 根目录或 `SKILL.md`。
 - 本地 Agent 桥接只监听 `127.0.0.1`，且只接受本机网页来源。

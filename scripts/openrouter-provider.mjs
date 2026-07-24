@@ -5,6 +5,7 @@ import { OpenRouter, stepCountIs, tool } from "@openrouter/agent";
 import { z } from "zod";
 import { validateStructuredResult } from "./agent-protocol.mjs";
 import {
+  isPromptSkillDisabled,
   loadPromptSkillBundle,
   promptSkillDefinition,
   promptSkillDocument,
@@ -252,7 +253,15 @@ export async function runOpenRouterRefine({
 }) {
   const client = getOpenRouterClient();
   if (!client) throw new Error("OpenRouter 尚未配置，请先在 .env.local 中设置 OPENROUTER_API_KEY");
-  const skill = await loadPromptSkillContext(skillId, skillPath || seedanceSkillPath);
+  const noSkill = isPromptSkillDisabled(skillId);
+  const skill = noSkill
+    ? {
+        id: "none",
+        hash: null,
+        instructions: "The user explicitly selected No Skill. Do not load, call, imitate, or claim to use any skill. Follow only the Agent Canvas task and return the required JSON object.",
+        referenceTool: null,
+      }
+    : await loadPromptSkillContext(skillId, skillPath || seedanceSkillPath);
   const sessionId = createOpenRouterSessionId(threadId);
   const content = [{ type: "input_text", text: textPrompt }];
   for (const attachment of attachments) content.push(await attachmentToOpenRouterImage(attachment));
@@ -276,8 +285,8 @@ export async function runOpenRouterRefine({
         schema: outputSchema,
       },
     },
-    tools: [skill.referenceTool],
-    stopWhen: stepCountIs(skill.id === "image" ? 8 : 4),
+    tools: noSkill ? [] : [skill.referenceTool],
+    stopWhen: stepCountIs(noSkill ? 1 : skill.id === "image" || skill.id === "nanobanana" ? 8 : 4),
     allowFinalResponse: true,
   };
   if (reasoningEffort && reasoningEffort !== "none") request.reasoning = { effort: reasoningEffort };

@@ -429,7 +429,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .codex-runtime > small { grid-column: 1 / -1; min-height: 13px; overflow: hidden; color: #89838e; font-size: 9px; line-height: 1.45; white-space: nowrap; text-overflow: ellipsis; }
 .codex-runtime > small.runtime-warning { color: #9b5f3f; }
 .core-specs { display: grid; grid-template-columns: 1.35fr .8fr .8fr; gap: 7px; margin-bottom: 10px; }
-.core-specs.skill-image { grid-template-columns: 1fr; }
+.core-specs.skill-image, .core-specs.skill-nanobanana, .core-specs.skill-photoreal { grid-template-columns: 1fr; }
 .core-specs label { display: flex; flex-direction: column; gap: 5px; }
 .core-specs label > span, .input-list-title, .prompt-input-label > span { color: #77717a; font-size: 9px; font-weight: 700; }
 .image-input-list { padding: 9px; margin-bottom: 10px; border: 1px solid #e0dce8; border-radius: 9px; background: #faf9fc; }

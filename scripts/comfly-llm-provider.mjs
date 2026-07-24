@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { validateStructuredResult } from "./agent-protocol.mjs";
 import {
+  isPromptSkillDisabled,
   loadPromptSkillBundle,
   promptSkillDocument,
   promptSkillInstructions,
@@ -150,6 +151,15 @@ const REFERENCE_ROUTES = Object.freeze({
     [/参考图|图片|图生视频|image/i, ["references/image-to-prompt.md"]],
     [/.*/, ["references/creative-strategy.md", "references/vocabulary.md"]],
   ]),
+  nanobanana: Object.freeze([
+    [/编辑|替换|局部|蒙版|参考图|保留|edit|mask/i, ["references/editing.md", "references/structural.md"]],
+    [/文字|海报|排版|字体|logo|UI|社交/i, ["references/text-rendering.md", "references/patterns/poster-illustration.md", "references/patterns/ui-social.md"]],
+    [/商品|电商|产品|家具|椅子|ecommerce/i, ["references/patterns/ecommerce.md"]],
+    [/人像|人物|模特|时尚|portrait|fashion/i, ["references/patterns/portrait-cinema.md", "references/patterns/fashion-editorial.md"]],
+    [/食物|饮料|餐饮|food|beverage/i, ["references/patterns/food-beverage.md"]],
+    [/分镜|故事板|storyboard/i, ["references/storyboards.md"]],
+    [/.*/, ["references/prompt-framework.md", "references/creative-direction.md"]],
+  ]),
   image: Object.freeze([
     [/编辑|替换|局部|蒙版|参考图|保留|edit|mask/i, ["references/editing.md", "references/structural.md"]],
     [/文字|海报|排版|字体|logo|UI|社交/i, ["references/text-rendering.md", "references/patterns/poster-illustration.md", "references/patterns/ui-social.md"]],
@@ -170,7 +180,11 @@ const REFERENCE_ROUTES = Object.freeze({
 });
 
 export function buildComflySkillInstructions(bundle, textPrompt = "") {
-  const routedNames = [];
+  const routedNames = bundle.id === "nanobanana"
+    ? ["references/nano-banana.md"]
+    : bundle.id === "image"
+      ? ["references/gpt-image.md"]
+      : [];
   for (const [pattern, names] of REFERENCE_ROUTES[bundle.id] || []) {
     if (!pattern.test(textPrompt)) continue;
     for (const name of names) if (!routedNames.includes(name)) routedNames.push(name);
@@ -181,6 +195,15 @@ export function buildComflySkillInstructions(bundle, textPrompt = "") {
     promptSkillInstructions(bundle),
     ...routed.map((document) => `\n--- 本任务已路由参考：${document.name} ---\n${document.content}`),
     "\n只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要输出 JSON 之外的任何内容。对象必须且只能包含 prompt、title、changes 三个非空字符串字段。",
+  ].join("\n");
+}
+
+export function buildComflyNoSkillInstructions() {
+  return [
+    "本任务明确选择“不加载 Skill”。不要读取、调用、模仿或声称使用任何 Skill。",
+    "只遵循用户消息中的 Agent Canvas 任务要求。",
+    "只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要输出 JSON 之外的任何内容。",
+    "对象必须且只能包含 prompt、title、changes 三个非空字符串字段。",
   ].join("\n");
 }
 
@@ -213,7 +236,8 @@ export async function runComflyLlmRefine({
   if (threadId && !String(threadId).startsWith(COMFLY_LLM_SESSION_PREFIX)) {
     throw new Error("该会话属于其他 Agent，不能交给 Comfly 继续执行");
   }
-  const bundle = await loadPromptSkillBundle(skillId, skillPath);
+  const noSkill = isPromptSkillDisabled(skillId);
+  const bundle = noSkill ? null : await loadPromptSkillBundle(skillId, skillPath);
   const content = [{ type: "text", text: textPrompt }];
   for (const attachment of attachments) content.push(await attachmentToComflyImage(attachment));
   const response = await fetchImpl(comflyApiUrl("chat/completions", env), {
@@ -226,7 +250,7 @@ export async function runComflyLlmRefine({
     body: JSON.stringify({
       model,
       messages: [
-        { role: "system", content: buildComflySkillInstructions(bundle, textPrompt) },
+        { role: "system", content: noSkill ? buildComflyNoSkillInstructions() : buildComflySkillInstructions(bundle, textPrompt) },
         { role: "user", content: attachments.length ? content : textPrompt },
       ],
       stream: false,
@@ -249,12 +273,12 @@ export async function runComflyLlmRefine({
     threadId: sessionId,
     usage: payload?.usage,
     provider: COMFLY_LLM_PROVIDER_ID,
-    skill: true,
-    skillId: bundle.id,
-    skillHash: bundle.hash,
-    seedanceSkill: bundle.id === "seedance",
-    seedanceSkillId: bundle.id === "seedance" ? bundle.id : undefined,
-    seedanceSkillHash: bundle.id === "seedance" ? bundle.hash : undefined,
+    skill: !noSkill,
+    skillId: noSkill ? "none" : bundle.id,
+    skillHash: noSkill ? null : bundle.hash,
+    seedanceSkill: !noSkill && bundle.id === "seedance",
+    seedanceSkillId: !noSkill && bundle.id === "seedance" ? bundle.id : undefined,
+    seedanceSkillHash: !noSkill && bundle.id === "seedance" ? bundle.hash : undefined,
     sessionMode: "stateless",
   };
 }

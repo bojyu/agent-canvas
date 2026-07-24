@@ -13,6 +13,7 @@ import { extname, isAbsolute, join, resolve } from "node:path";
 import readline from "node:readline";
 import { AGENT_OUTPUT_SCHEMA, validateStructuredResult } from "./agent-protocol.mjs";
 import {
+  isPromptSkillDisabled,
   loadPromptSkillBundle,
   materializeIsolatedPromptSkillBundle,
   promptSkillInstructions,
@@ -668,10 +669,18 @@ async function applySessionOption(client, sessionId, configOptions, category, pa
 }
 
 function buildGrokPrompt(bundle, textPrompt, outputSchema) {
+  const guidance = bundle
+    ? [
+        `The following locally bundled ${bundle.label} skill is mandatory and is the only creative-production guidance allowed for this task.`,
+        promptSkillInstructions(bundle, { includeAllReferences: true }),
+      ]
+    : [
+        "The user explicitly selected No Skill. No skill bundle is mounted.",
+        "Do not load, call, imitate, search for, or claim to use any skill. Follow only the Agent Canvas task.",
+      ];
   return [
     "You are the isolated Grok Build provider for Agent Canvas. Do not use tools, shell commands, web search, plugins, MCP servers, subagents, or external skills.",
-    `The following locally bundled ${bundle.label} skill is mandatory and is the only creative-production guidance allowed for this task.`,
-    promptSkillInstructions(bundle, { includeAllReferences: true }),
+    ...guidance,
     "\n--- Agent Canvas task ---\n",
     textPrompt,
     "\nReturn exactly one JSON object and no Markdown or commentary. It must match this schema:",
@@ -727,7 +736,8 @@ export async function runGrokBuildRefine({
   if (signal?.aborted) throw abortError(signal.reason);
   const findings = await unsafeConfigFindings(runtime);
   if (findings.length) throw new Error(unsafeConfigMessage(findings));
-  const bundle = await loadPromptSkillBundle(skillId, skillPath || seedanceSkillPath);
+  const noSkill = isPromptSkillDisabled(skillId);
+  const bundle = noSkill ? null : await loadPromptSkillBundle(skillId, skillPath || seedanceSkillPath);
   const logicalSessionId = createGrokBuildSessionId(threadId);
   const prepared = await prepareRuntime(runtime, bundle);
   let client;
@@ -786,12 +796,12 @@ export async function runGrokBuildRefine({
       threadId: logicalSessionId,
       usage: promptResult.usage || client.usage,
       provider: GROK_BUILD_PROVIDER_ID,
-      skill: true,
-      skillId: bundle.id,
-      skillHash: bundle.hash,
-      seedanceSkill: bundle.id === "seedance",
-      seedanceSkillId: bundle.id === "seedance" ? bundle.id : undefined,
-      seedanceSkillHash: bundle.id === "seedance" ? bundle.hash : undefined,
+      skill: !noSkill,
+      skillId: noSkill ? "none" : bundle.id,
+      skillHash: noSkill ? null : bundle.hash,
+      seedanceSkill: !noSkill && bundle.id === "seedance",
+      seedanceSkillId: !noSkill && bundle.id === "seedance" ? bundle.id : undefined,
+      seedanceSkillHash: !noSkill && bundle.id === "seedance" ? bundle.hash : undefined,
       sessionMode: "stateless",
     };
   } finally {

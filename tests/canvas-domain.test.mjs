@@ -86,6 +86,50 @@ test("automation node writes reject credential-shaped data fields", () => {
   assert.throws(() => applyCanvasOperations(input, [{ op: "update_node", nodeId: "safe", data: { password: "nope" } }]), /不允许保存密钥或凭据/);
 });
 
+test("Nano Banana prompt adapter compiles as an image-only prompt task", () => {
+  const nodes = [
+    createCanvasNode("prompt", {
+      id: "nano",
+      data: {
+        provider: "codex",
+        model: "gpt-5.6",
+        skillId: "nanobanana",
+        instruction: "生成一张自然光产品场景图",
+        ratio: "3:4",
+      },
+    }),
+    createCanvasNode("text", { id: "output" }),
+  ];
+  const request = buildNodeTaskRequest(project(nodes, [
+    { id: "output", source: "nano", target: "output", type: "disconnectable" },
+  ]), "nano");
+  assert.equal(request.payload.skillId, "nanobanana");
+  assert.equal(request.payload.spec.skillId, "nanobanana");
+  assert.match(request.payload.instruction, /Nano Banana/);
+});
+
+test("No Skill prompt mode compiles without model-specific guidance", () => {
+  const nodes = [
+    createCanvasNode("prompt", {
+      id: "plain",
+      data: {
+        provider: "codex",
+        model: "gpt-5.6",
+        skillId: "none",
+        instruction: "整理成一份完整提示词",
+        ratio: "3:4",
+      },
+    }),
+    createCanvasNode("text", { id: "output" }),
+  ];
+  const request = buildNodeTaskRequest(project(nodes, [
+    { id: "output", source: "plain", target: "output", type: "disconnectable" },
+  ]), "plain");
+  assert.equal(request.payload.skillId, "none");
+  assert.match(request.payload.instruction, /不要加载或调用任何 Skill/);
+  assert.doesNotMatch(request.payload.instruction, /Seedance2|Nano Banana|GPT Image/);
+});
+
 test("image generator compiles graph connections into a task request", () => {
   const nodes = [
     createCanvasNode("text", { id: "brief", text: "A red chair" }),

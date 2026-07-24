@@ -92,9 +92,11 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /multiSelectionKeyCode="Shift"/);
   assert.match(flowSource, /className="canvas-shortcuts-hint"/);
   assert.match(flowSource, /const REWRITE_NODE_TITLE = "编辑改写"/);
-  assert.match(flowSource, /type PromptSkillId = "seedance" \| "image" \| "photoreal"/);
+  assert.match(flowSource, /type PromptSkillId = "none" \| "seedance" \| "nanobanana" \| "image" \| "photoreal"/);
+  assert.match(flowSource, /不加载 Skill/);
   assert.match(flowSource, /Seedance 视频提示词/);
-  assert.match(flowSource, /Image 图像提示词/);
+  assert.match(flowSource, /Nano Banana 图像提示词/);
+  assert.match(flowSource, /GPT Image 图像提示词/);
   assert.match(flowSource, /真实感场景与模特图/);
   assert.match(flowSource, /提示词 Skill/);
   assert.match(flowSource, /isImagePromptSkill/);
@@ -409,6 +411,7 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(canvasDomainSource, /compactCanvasProject/);
   assert.match(canvasDomainSource, /buildNodeTaskRequest/);
   assert.match(canvasDomainSource, /applyTaskResultToProject/);
+  assert.match(canvasDomainSource, /\["nanobanana", "image", "photoreal"\]/);
   assert.match(bridgeSource, /throw new HttpError\(409, `输出节点已有任务/);
   assert.match(bridgeSource, /stage\(onStage, "preparing_media", signal\)/);
   assert.match(bridgeSource, /stage\(onStage, "codex", signal\)/);
@@ -426,6 +429,11 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(bridgeSource, /item\.provider === ANTIGRAVITY_PROVIDER_ID/);
   assert.match(bridgeSource, /item\.provider === COMFLY_LLM_PROVIDER_ID/);
   assert.match(bridgeSource, /runComflyLlmRefine/);
+  assert.match(bridgeSource, /Nano Banana 提示词直接生成模式/);
+  assert.match(bridgeSource, /GPT Image 提示词直接生成模式/);
+  assert.match(bridgeSource, /本任务明确选择“不加载 Skill”/);
+  assert.match(bridgeSource, /models\.md → nano-banana\.md → golden-rules\.md/);
+  assert.match(bridgeSource, /models\.md → gpt-image\.md → golden-rules\.md/);
   assert.match(bridgeSource, /stage\(onStage, COMFLY_LLM_PROVIDER_ID, signal\)/);
   assert.match(bridgeSource, /requestUrl\.searchParams\.get\("provider"\)/);
   assert.match(bridgeSource, /providers: \{[\s\S]*?codex:[\s\S]*?openrouter:/);

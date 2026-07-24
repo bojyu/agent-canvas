@@ -276,7 +276,7 @@ export function validateCanvasConnection(nodes, edges, connection) {
     const videoCount = other.filter((edge) => byId.get(edge.source)?.type === "video").length;
     if (source.type === "reference" && imageCount >= MAX_REWRITE_IMAGES) return { valid: false, reason: "改写节点最多接入 9 张图片" };
     if (source.type === "video" && videoCount >= MAX_REWRITE_VIDEOS) return { valid: false, reason: "改写节点最多接入 3 个视频" };
-    if (source.type === "video" && ["image", "photoreal"].includes(String(target.data?.skillId || ""))) return { valid: false, reason: "当前图片提示词 Skill 不支持视频参考" };
+    if (source.type === "video" && ["nanobanana", "image", "photoreal"].includes(String(target.data?.skillId || ""))) return { valid: false, reason: "当前图片提示词 Skill 不支持视频参考" };
     return { valid: true };
   }
   if (source.type === "reference" && target.type === "imagegenerator") {
@@ -715,18 +715,22 @@ export function buildNodeTaskRequest(inputProject, nodeId, overrides = {}) {
       if (!dataUrl) throw new Error(`参考节点 ${source.id} 还没有素材`);
       return { mediaKind, marker: mediaKind === "video" ? `@视频${++videoIndex}` : `@图片${++imageIndex}`, fileName: source.data?.fileName, dataUrl };
     });
-    if (["image", "photoreal"].includes(skillId) && media.some((item) => item.mediaKind === "video")) throw new Error("当前图片提示词 Skill 不支持视频参考");
+    if (["nanobanana", "image", "photoreal"].includes(skillId) && media.some((item) => item.mediaKind === "video")) throw new Error("当前图片提示词 Skill 不支持视频参考");
     const images = media.filter((item) => item.mediaKind === "image").map((item, index) => ({ ...item, slot: index + 1 }));
     const videos = media.filter((item) => item.mediaKind === "video").map((item, index) => ({ ...item, slot: index + 1 }));
     const provider = String(data.provider || "codex");
-    const isImageSkill = ["image", "photoreal"].includes(skillId);
+    const isImageSkill = ["nanobanana", "image", "photoreal"].includes(skillId);
     return {
       payload: {
         prompt: instruction,
-        instruction: isImageSkill
+        instruction: skillId === "none"
+          ? "不要加载或调用任何 Skill。根据用户需求和已连接的图片、视频参考，直接整理成一份完整、可复制使用的提示词。"
+          : isImageSkill
           ? skillId === "photoreal"
             ? "根据用户需求和已连接的参考图片，按真实感场景 Skill 路由参考分类，生成一份可直接复制使用的完整真实感图像提示词。"
-            : "根据用户需求和已连接的参考图片，按 Image skill 选择合适的图像模型并生成一份可直接复制使用的完整图像提示词。"
+            : skillId === "nanobanana"
+              ? "根据用户需求和已连接的参考图片，严格按 Image skill 的 Nano Banana 适配规则生成一份可直接复制使用的完整提示词。"
+              : "根据用户需求和已连接的参考图片，严格按 Image skill 的 GPT Image 适配规则生成一份可直接复制使用的完整提示词。"
           : "根据用户需求和已连接的图片、视频参考，直接生成一段可用于 Seedance2 的最终中文提示词。",
         skillId,
         provider,

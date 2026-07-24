@@ -1,6 +1,6 @@
 {
   "name": "agent-canvas",
-  "version": "0.1.0+codex.20260722084821",
+  "version": "0.1.0+codex.20260724032215",
   "description": "Build and run local visual AI workflows from Codex through Agent Canvas.",
   "author": {
     "name": "bojyu",

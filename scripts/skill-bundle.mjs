@@ -3,9 +3,43 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-export const PROMPT_SKILL_IDS = Object.freeze(["seedance", "image", "photoreal"]);
+const IMAGE_PROMPT_REFERENCE_FILES = Object.freeze([
+  "references/characters.md",
+  "references/creative-direction.md",
+  "references/dimensional.md",
+  "references/editing.md",
+  "references/golden-rules.md",
+  "references/gpt-image.md",
+  "references/models.md",
+  "references/multi-panel.md",
+  "references/nano-banana.md",
+  "references/prompt-framework.md",
+  "references/slides.md",
+  "references/storyboards.md",
+  "references/structural.md",
+  "references/text-rendering.md",
+  "references/vision-decomposer.md",
+  "references/patterns/character-design.md",
+  "references/patterns/ecommerce.md",
+  "references/patterns/fashion-editorial.md",
+  "references/patterns/food-beverage.md",
+  "references/patterns/portrait-cinema.md",
+  "references/patterns/poster-illustration.md",
+  "references/patterns/ui-social.md",
+]);
+
+export const PROMPT_SKILL_IDS = Object.freeze(["none", "seedance", "nanobanana", "image", "photoreal"]);
+export const LOADABLE_PROMPT_SKILL_IDS = Object.freeze(PROMPT_SKILL_IDS.filter((id) => id !== "none"));
 
 export const PROMPT_SKILL_DEFINITIONS = Object.freeze({
+  none: Object.freeze({
+    id: "none",
+    label: "No Skill",
+    taskLabel: "不加载 Skill",
+    referenceFiles: Object.freeze([]),
+    preloadedReferenceFiles: Object.freeze([]),
+    safetyInstruction: "不得读取、调用或注入任何 Skill。",
+  }),
   seedance: Object.freeze({
     id: "seedance",
     label: "Seedance",
@@ -30,39 +64,31 @@ export const PROMPT_SKILL_DEFINITIONS = Object.freeze({
     ]),
     safetyInstruction: "不得执行 dreamina CLI 或生成视频。",
   }),
-  image: Object.freeze({
-    id: "image",
-    label: "Image",
-    taskLabel: "图像生成提示词",
-    referenceFiles: Object.freeze([
-      "references/characters.md",
-      "references/creative-direction.md",
-      "references/dimensional.md",
-      "references/editing.md",
-      "references/golden-rules.md",
-      "references/gpt-image.md",
-      "references/models.md",
-      "references/multi-panel.md",
-      "references/nano-banana.md",
-      "references/prompt-framework.md",
-      "references/slides.md",
-      "references/storyboards.md",
-      "references/structural.md",
-      "references/text-rendering.md",
-      "references/vision-decomposer.md",
-      "references/patterns/character-design.md",
-      "references/patterns/ecommerce.md",
-      "references/patterns/fashion-editorial.md",
-      "references/patterns/food-beverage.md",
-      "references/patterns/portrait-cinema.md",
-      "references/patterns/poster-illustration.md",
-      "references/patterns/ui-social.md",
-    ]),
+  nanobanana: Object.freeze({
+    id: "nanobanana",
+    label: "Nano Banana",
+    taskLabel: "Nano Banana 图像提示词",
+    directoryNames: Object.freeze(["image"]),
+    referenceFiles: IMAGE_PROMPT_REFERENCE_FILES,
     preloadedReferenceFiles: Object.freeze([
       "references/models.md",
+      "references/nano-banana.md",
       "references/golden-rules.md",
     ]),
-    safetyInstruction: "该 Skill 只编写提示词；不得调用图像生成工具或生成图片。",
+    safetyInstruction: "该 Skill 只编写 Nano Banana 提示词；不得调用图像生成工具或生成图片。",
+  }),
+  image: Object.freeze({
+    id: "image",
+    label: "GPT Image",
+    taskLabel: "GPT Image 图像提示词",
+    directoryNames: Object.freeze(["image"]),
+    referenceFiles: IMAGE_PROMPT_REFERENCE_FILES,
+    preloadedReferenceFiles: Object.freeze([
+      "references/models.md",
+      "references/gpt-image.md",
+      "references/golden-rules.md",
+    ]),
+    safetyInstruction: "该 Skill 只编写 GPT Image 提示词；不得调用图像生成工具或生成图片。",
   }),
   photoreal: Object.freeze({
     id: "photoreal",
@@ -100,7 +126,11 @@ export function promptSkillDefinition(value) {
 
 export function isImagePromptSkillId(value) {
   const id = normalizePromptSkillId(value);
-  return id === "image" || id === "photoreal";
+  return id === "nanobanana" || id === "image" || id === "photoreal";
+}
+
+export function isPromptSkillDisabled(value) {
+  return normalizePromptSkillId(value) === "none";
 }
 
 function ensureSkillPath(definition, root, relativePath) {
@@ -118,6 +148,7 @@ function ensureSkillPath(definition, root, relativePath) {
 
 export async function loadPromptSkillBundle(skillId, skillPath) {
   const definition = promptSkillDefinition(skillId);
+  if (definition.id === "none") throw new Error("不加载 Skill 模式没有可读取的 Skill bundle");
   if (!skillPath) throw new Error(`未找到本机 ${definition.label} skill`);
   const root = resolve(dirname(skillPath));
   const documents = await Promise.all([

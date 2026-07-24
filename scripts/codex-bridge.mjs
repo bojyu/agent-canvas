@@ -38,8 +38,10 @@ import {
   runComflyLlmRefine,
 } from "./comfly-llm-provider.mjs";
 import {
+  LOADABLE_PROMPT_SKILL_IDS,
   PROMPT_SKILL_IDS,
   isImagePromptSkillId,
+  isPromptSkillDisabled,
   normalizePromptSkillId,
   promptSkillDefinition,
 } from "./skill-bundle.mjs";
@@ -202,6 +204,7 @@ const explicitlyConfiguredSkillPaths = {
 };
 
 function isPromptSkill(path, skillId) {
+  if (skillId === "none") return false;
   const explicitPath = explicitlyConfiguredSkillPaths[skillId];
   if (explicitPath && resolve(path) === explicitPath) return true;
   const definition = promptSkillDefinition(skillId);
@@ -216,7 +219,7 @@ const skillFiles = [...new Set([
 ])];
 const skillPaths = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [
   skillId,
-  explicitlyConfiguredSkillPaths[skillId] || skillFiles.find((path) => isPromptSkill(path, skillId)),
+  skillId === "none" ? null : explicitlyConfiguredSkillPaths[skillId] || skillFiles.find((path) => isPromptSkill(path, skillId)),
 ]));
 const codexClients = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [
   skillId,
@@ -506,15 +509,25 @@ function buildInstruction(payload, attachments, provider = "codex") {
 4. 修改结果仍须符合 Seedance2 提示词格式，并且可直接复制使用。`
     : `这是 Agent Canvas 的直接生成模式：用户已经给出最终创作要求，不要反问、不要输出候选方案、不要询问是否调用 dreamina CLI，也不要执行视频生成。只返回一段可直接用于 Seedance2 的中文提示词。`;
 
-  const imageModeRules = isRevision
-    ? `这是 Agent Canvas 的图像提示词修改模式。下方“当前完整提示词”是已经可用的图像生成提示词，“本次修改建议”是用户这一次唯一要求调整的内容。
+  const nanoBananaModeRules = isRevision
+    ? `这是 Agent Canvas 的 Nano Banana 提示词修改模式。下方“当前完整提示词”是已经可用的 Nano Banana 提示词，“本次修改建议”是用户这一次唯一要求调整的内容。
 
 修改规则：
-1. 根据建议返回一份完整替换版，保留 Image skill 要求的 Model、Quality、Size / Ratio、Prompt 和 Notes 结构。
+1. 根据建议返回一份完整替换版，保留 Model、Size / Ratio、Prompt 和 Notes 结构；Nano Banana 不输出 Quality 字段。
 2. 只改动建议涉及的部分；未提及的主体、构图、风格、材质、文字、参考图角色和保留项继续保留。
 3. 如果建议与旧提示词冲突，以明确的新建议为准；不要虚构品牌、产品功能或参考图中不存在的事实。
-4. 修改结果必须可直接复制给所推荐的图像模型使用。`
-    : `这是 Agent Canvas 的图像提示词直接生成模式。严格按 Image skill 的读取顺序选择 Nano Banana 或 GPT Image 2，并在 prompt 字段中返回完整的 Model、Quality（适用时）、Size / Ratio、Prompt 和 Notes。不要调用图像生成工具，不要反问，不要输出多个候选方案。`;
+4. 继续使用 Nano Banana 的自然语言提示词结构，不得改写成 GPT Image 的五段式模板。`
+    : `这是 Agent Canvas 的 Nano Banana 提示词直接生成模式。必须在 Nano Banana 2 与 Nano Banana Pro 中按任务选择，读取 nano-banana.md，并在 prompt 字段中返回完整的 Model、Size / Ratio、Prompt 和 Notes。使用自然语言结构，不得输出 GPT Image 的五段式模板或 Quality 字段。不要调用图像生成工具，不要反问，不要输出多个候选方案。`;
+
+  const gptImageModeRules = isRevision
+    ? `这是 Agent Canvas 的 GPT Image 提示词修改模式。下方“当前完整提示词”是已经可用的 GPT Image 提示词，“本次修改建议”是用户这一次唯一要求调整的内容。
+
+修改规则：
+1. 根据建议返回一份完整替换版，保留 Model、Quality、Size / Ratio、Prompt 和 Notes 结构。
+2. 只改动建议涉及的部分；未提及的主体、构图、风格、材质、文字、参考图角色和保留项继续保留。
+3. 如果建议与旧提示词冲突，以明确的新建议为准；不要虚构品牌、产品功能或参考图中不存在的事实。
+4. 继续使用 GPT Image 2 的 Scene / Subject / Important Details / Use Case / Constraints 五段式结构。`
+    : `这是 Agent Canvas 的 GPT Image 提示词直接生成模式。目标模型固定为 GPT Image 2，读取 gpt-image.md，并在 prompt 字段中返回完整的 Model、Quality、Size / Ratio、Prompt 和 Notes。Prompt 必须使用 Scene / Subject / Important Details / Use Case / Constraints 五段式结构。不要切换到 Nano Banana，不要调用图像生成工具，不要反问，不要输出多个候选方案。`;
 
   const photorealModeRules = isRevision
     ? `这是 Agent Canvas 的真实感场景提示词修改模式。下方“当前完整提示词”是已有提示词，“本次修改建议”是用户这一次唯一要求调整的内容。
@@ -535,9 +548,43 @@ function buildInstruction(payload, attachments, provider = "codex") {
         : provider === COMFLY_LLM_PROVIDER_ID
           ? "Comfly"
         : "Codex";
+  if (isPromptSkillDisabled(skillId)) {
+    return `本任务明确选择“不加载 Skill”。不要读取、调用、搜索或注入任何 Skill，也不要套用 Seedance、Nano Banana、GPT Image 或真实感场景的专用模板。
+
+${isRevision
+  ? "这是修改模式。只按“本次修改建议”修改“当前完整提示词”，输出一份完整替换版本；未提及的主体、构图、动作、镜头、材质、文字、引用编号和约束应保持不变。"
+  : "这是直接生成模式。根据用户原始需求和已连接参考素材，整理成一份完整、清晰、可直接复制使用的提示词；不反问，不输出候选方案。"}
+
+硬性要求：
+1. 不加载或调用任何 Skill，不声称使用了任何 Skill。
+2. 严格使用用户已连接的 @图片N / @视频N 编号；没有连接的编号不得虚构。
+3. 参考素材按下面的附件映射理解，不得把附件顺序误当成素材编号。
+4. 不强制套用任何特定模型格式；保持用户原有语言和用途，除非修改建议明确要求改变。
+5. 最终可复制内容完整放入 JSON 的 prompt 字段；title 用 12 字以内概括，changes 用一句中文概括本次生成或修改。
+
+生成规格：
+${spec}
+
+参考素材附件映射：
+${attachmentMap}
+
+${isRevision ? "当前完整提示词" : "用户原始需求"}：
+${String(payload.prompt || "")}
+
+${isRevision ? "本次修改建议" : "执行要求"}：
+${String(payload.instruction || "")}
+
+请严格按 JSON Schema 返回。`;
+  }
   if (isImagePromptSkillId(skillId)) {
     const isPhotoreal = skillId === "photoreal";
-    return `本任务必须且只能使用已经加载到当前 Agent 上下文中的 ${skill.label} skill。${isPhotoreal ? "开始生成前先读 reference-library.md，再按场景只读一个相关分类文件，并遵循结构与透视优先于风格修饰的原则。" : "开始生成前，严格遵循它规定的 models → 对应模型规则 → golden-rules → 任务相关参考文档读取顺序。"}不要调用其他 skill。
+    const isNanoBanana = skillId === "nanobanana";
+    const imageModeRules = isNanoBanana ? nanoBananaModeRules : gptImageModeRules;
+    const imageReadingOrder = isNanoBanana
+      ? "开始生成前，严格按 models.md → nano-banana.md → golden-rules.md → 任务相关参考文档的顺序读取。"
+      : "开始生成前，严格按 models.md → gpt-image.md → golden-rules.md → 任务相关参考文档的顺序读取。";
+    const skillBinding = isPhotoreal ? `${skill.label} skill` : `Image skill 的 ${skill.label} 适配规则`;
+    return `本任务必须且只能使用已经加载到当前 Agent 上下文中的 ${skillBinding}。${isPhotoreal ? "开始生成前先读 reference-library.md，再按场景只读一个相关分类文件，并遵循结构与透视优先于风格修饰的原则。" : imageReadingOrder}不要调用其他 skill。
 
 ${isPhotoreal ? photorealModeRules : imageModeRules}
 
@@ -874,7 +921,7 @@ async function executeRefine(payload, { signal, onStage } = {}) {
   const skillPath = skillPaths[skillId];
   assertProviderThread(provider, payload?.threadId);
   stage(onStage, "validating", signal);
-  if (!skillPath) {
+  if (!isPromptSkillDisabled(skillId) && !skillPath) {
     throw new HttpError(503, `未找到本机 ${skill.label} skill，已阻止普通改写`);
   }
   if (typeof payload?.prompt !== "string" || !payload.prompt.trim()) {
@@ -1156,7 +1203,7 @@ async function executeRefine(payload, { signal, onStage } = {}) {
         ...parsed,
         threadId: thread.id,
         usage: result.usage,
-        skill: true,
+        skill: !isPromptSkillDisabled(skillId),
         skillId,
         skillHash: null,
         seedanceSkill: skillId === "seedance",
@@ -2108,9 +2155,10 @@ const server = createServer(async (request, response) => {
     const availableSkills = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [skillId, {
       id: skillId,
       label: promptSkillDefinition(skillId).taskLabel,
-      ready: Boolean(skillPaths[skillId]),
+      ready: skillId === "none" || Boolean(skillPaths[skillId]),
     }]));
-    const skillReady = PROMPT_SKILL_IDS.some((skillId) => Boolean(skillPaths[skillId]));
+    const loadableSkillReady = LOADABLE_PROMPT_SKILL_IDS.some((skillId) => Boolean(skillPaths[skillId]));
+    const skillReady = true;
     const openRouterReady = skillReady && openRouterConfigured();
     const comflyReady = skillReady && comflyLlmConfigured();
     const grokBuildStatus = await getGrokBuildStatus();
@@ -2121,6 +2169,7 @@ const server = createServer(async (request, response) => {
       localOnly: true,
       seedanceSkill: Boolean(skillPaths.seedance),
       imageSkill: Boolean(skillPaths.image),
+      loadableSkillReady,
       skills: availableSkills,
       providers: {
         codex: {

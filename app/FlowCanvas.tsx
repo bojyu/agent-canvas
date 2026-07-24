@@ -54,7 +54,7 @@ type MediaSlot = {
   hasMedia: boolean;
 };
 type AgentProvider = "codex" | "openrouter" | "comfly" | "grok-build" | "antigravity";
-type PromptSkillId = "seedance" | "image" | "photoreal";
+type PromptSkillId = "none" | "seedance" | "nanobanana" | "image" | "photoreal";
 type ImageGenerationProvider = "openrouter" | "google" | "comfly";
 type ImageGenerationResolution = "1K" | "2K" | "4K";
 type ImageGenerationModelOption = {
@@ -279,10 +279,12 @@ const PROVIDER_LABELS: Record<AgentProvider, string> = {
   "grok-build": "Grok Build",
   antigravity: "Antigravity",
 };
-const PROMPT_SKILLS: PromptSkillId[] = ["seedance", "image", "photoreal"];
+const PROMPT_SKILLS: PromptSkillId[] = ["none", "seedance", "nanobanana", "image", "photoreal"];
 const PROMPT_SKILL_LABELS: Record<PromptSkillId, string> = {
+  none: "不加载 Skill",
   seedance: "Seedance 视频提示词",
-  image: "Image 图像提示词",
+  nanobanana: "Nano Banana 图像提示词",
+  image: "GPT Image 图像提示词",
   photoreal: "真实感场景与模特图",
 };
 const ASPECT_RATIOS = ["Auto", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"] as const;
@@ -431,13 +433,13 @@ function normalizeVideoGenerationProvider(provider: unknown): VideoGenerationPro
 
 function normalizePromptSkill(skillId: unknown): PromptSkillId {
   if (skillId === undefined || skillId === null || skillId === "") return "seedance";
-  if (skillId === "seedance" || skillId === "image" || skillId === "photoreal") return skillId;
+  if (skillId === "none" || skillId === "seedance" || skillId === "nanobanana" || skillId === "image" || skillId === "photoreal") return skillId;
   throw new Error(`不支持的提示词 Skill：${String(skillId)}`);
 }
 
-function isImagePromptSkill(skillId: unknown): skillId is "image" | "photoreal" {
+function isImagePromptSkill(skillId: unknown): skillId is "nanobanana" | "image" | "photoreal" {
   const normalized = normalizePromptSkill(skillId);
-  return normalized === "image" || normalized === "photoreal";
+  return normalized === "nanobanana" || normalized === "image" || normalized === "photoreal";
 }
 
 function providerSource(provider: unknown): "Codex" | "OpenRouter" | "Comfly" | "Grok Build" | "Antigravity" {
@@ -727,7 +729,7 @@ function CodexNode({ data }: NodeProps<GraphNode>) {
     <NodeFrame data={data} tone="codex" input={false}>
       <label className="skill-selector nodrag"><span>提示词 Skill</span><select value={skillId} onChange={(event) => data.onUpdate?.({ skillId: normalizePromptSkill(event.target.value), threadId: undefined })}>{PROMPT_SKILLS.map((id) => <option value={id} key={id}>{PROMPT_SKILL_LABELS[id]}</option>)}</select></label>
 
-      <ModelControls data={data} helper={imagePromptSkill ? "支持参考图片" : "支持图片与视频取帧"} mediaAware />
+      <ModelControls data={data} helper={skillId === "none" ? "不注入 Skill，支持图片与视频参考" : imagePromptSkill ? "支持参考图片" : "支持图片与视频取帧"} mediaAware />
 
       <div className={`core-specs nodrag skill-${skillId}`}>
         {skillId === "seedance" && <label><span>参考模式</span><select value={data.mode} onChange={(event) => data.onUpdate?.({ mode: event.target.value })}><option>全能参考</option><option>单帧参考</option><option>首尾帧参考</option><option>多帧参考</option></select></label>}
@@ -749,11 +751,11 @@ function CodexNode({ data }: NodeProps<GraphNode>) {
 
       <label className="prompt-input-label nodrag">
         <span>提示词需求</span>
-        <textarea value={data.instruction} onChange={(event) => data.onUpdate?.({ instruction: event.target.value })} placeholder={imagePromptSkill ? "输入图像创作或改图需求；引用素材时使用上方显示的 @图片N。" : "输入视频创作需求；引用素材时使用上方显示的 @图片N / @视频N。"} />
+        <textarea value={data.instruction} onChange={(event) => data.onUpdate?.({ instruction: event.target.value })} placeholder={skillId === "none" ? "输入需要整理或改写的提示词需求；可使用上方显示的 @图片N / @视频N。" : imagePromptSkill ? "输入图像创作或改图需求；引用素材时使用上方显示的 @图片N。" : "输入视频创作需求；引用素材时使用上方显示的 @图片N / @视频N。"} />
       </label>
 
       <button className="nodrag core-run" disabled={data.busy} onClick={data.onRun}>
-        {data.busy ? data.busyLabel || "任务处理中…" : imagePromptSkill ? skillId === "photoreal" ? "生成真实感提示词" : "生成图像提示词" : "生成视频提示词"}<b>{data.busy ? "···" : "↗"}</b>
+        {data.busy ? data.busyLabel || "任务处理中…" : skillId === "none" ? "直接生成提示词" : skillId === "photoreal" ? "生成真实感提示词" : skillId === "nanobanana" ? "生成 Nano Banana 提示词" : skillId === "image" ? "生成 GPT Image 提示词" : "生成视频提示词"}<b>{data.busy ? "···" : "↗"}</b>
       </button>
     </NodeFrame>
   );
@@ -3382,16 +3384,22 @@ function FlowWorkspace() {
     try {
       await enqueueTask({
         prompt: instruction,
-        instruction: isImagePromptSkill(skillId)
+        instruction: skillId === "none"
+          ? "不要加载或调用任何 Skill。根据用户需求和已连接的图片、视频参考，直接整理成一份完整、可复制使用的提示词。"
+          : isImagePromptSkill(skillId)
           ? skillId === "photoreal"
             ? "根据用户需求和已连接的参考图片，按真实感场景 Skill 路由参考分类，生成一份可直接复制使用的完整真实感图像提示词。"
-            : "根据用户需求和已连接的参考图片，按 Image skill 选择合适的图像模型并生成一份可直接复制使用的完整图像提示词。"
+            : skillId === "nanobanana"
+              ? "根据用户需求和已连接的参考图片，严格按 Image skill 的 Nano Banana 适配规则生成一份可直接复制使用的完整提示词。"
+              : "根据用户需求和已连接的参考图片，严格按 Image skill 的 GPT Image 适配规则生成一份可直接复制使用的完整提示词。"
           : "根据用户需求和已连接的图片、视频参考，直接生成一段可用于 Seedance2 的最终中文提示词。视频参考应依据按时间顺序抽取的关键帧理解其动作、运镜与节奏。",
         skillId,
         provider,
         model: selectedModel.model,
         reasoningEffort: selectedEffort,
-        spec: isImagePromptSkill(skillId)
+        spec: skillId === "none"
+          ? { skillId, ratio: codexNode?.data.ratio, provider, model: selectedModel.model, reasoningEffort: selectedEffort, imageMarkers: images.map((image) => image.marker), videoMarkers: videos.map((video) => video.marker) }
+          : isImagePromptSkill(skillId)
           ? { skillId, ratio: codexNode?.data.ratio, provider, model: selectedModel.model, reasoningEffort: selectedEffort, imageMarkers: images.map((image) => image.marker) }
           : { skillId, mode: codexNode?.data.mode, duration: codexNode?.data.duration, ratio: codexNode?.data.ratio, provider, model: selectedModel.model, reasoningEffort: selectedEffort, imageMarkers: images.map((image) => image.marker), videoMarkers: videos.map((video) => video.marker) },
         images,
@@ -3450,7 +3458,9 @@ function FlowWorkspace() {
         model: selectedModel.model,
         reasoningEffort: selectedEffort,
         threadId: editorNode.data.threadId,
-        spec: isImagePromptSkill(skillId)
+        spec: skillId === "none"
+          ? { skillId, ratio: editorNode.data.ratio, provider, model: selectedModel.model, reasoningEffort: selectedEffort }
+          : isImagePromptSkill(skillId)
           ? { skillId, ratio: editorNode.data.ratio, provider, model: selectedModel.model, reasoningEffort: selectedEffort }
           : { skillId, mode: editorNode.data.mode, duration: editorNode.data.duration, ratio: editorNode.data.ratio, provider, model: selectedModel.model, reasoningEffort: selectedEffort },
       }, {

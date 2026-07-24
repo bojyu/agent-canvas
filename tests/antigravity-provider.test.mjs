@@ -157,6 +157,22 @@ test("runAntigravityRefine loads the selected Image skill in isolation", async (
   assert.equal(ok.seedanceSkill, false);
 });
 
+test("runAntigravityRefine supports No Skill without a skill path", async (t) => {
+  const fx = await makeRuntime(t);
+  const ok = await runAntigravityRefine({
+    model: "Gemini 3.5 Flash (Medium)",
+    reasoningEffort: "medium",
+    textPrompt: "整理成一份通用提示词",
+    attachments: [],
+    skillId: "none",
+    runtime: fx.runtime,
+  });
+  assert.equal(ok.skill, false);
+  assert.equal(ok.skillId, "none");
+  assert.equal(ok.skillHash, null);
+  assert.equal(ok.seedanceSkill, false);
+});
+
 test("runAntigravityRefine surfaces login errors", async (t) => {
   const fx = await makeRuntime(t);
   await assert.rejects(

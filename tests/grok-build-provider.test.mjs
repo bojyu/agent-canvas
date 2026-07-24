@@ -192,6 +192,22 @@ test("ACP refine injects Seedance and returns strict structured output", async (
   assert.equal(result.sessionMode, "stateless");
 });
 
+test("Grok No Skill mode runs without a skill path or bundle", async (t) => {
+  const setup = await fixture(t);
+  const result = await runGrokBuildRefine({
+    model: "grok-4.5",
+    reasoningEffort: "low",
+    textPrompt: "整理成通用提示词。",
+    skillId: "none",
+    runtime: setup.runtime,
+    timeoutMs: 5_000,
+  });
+  assert.equal(result.skill, false);
+  assert.equal(result.skillId, "none");
+  assert.equal(result.skillHash, null);
+  assert.equal(result.seedanceSkill, false);
+});
+
 test("reference media fails clearly when ACP image input is unavailable", async (t) => {
   const setup = await fixture(t);
   const image = join(setup.root, "reference.png");

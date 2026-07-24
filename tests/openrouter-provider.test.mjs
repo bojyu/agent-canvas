@@ -12,7 +12,7 @@ import {
   normalizeOpenRouterModel,
   validateStructuredResult,
 } from "../scripts/openrouter-provider.mjs";
-import { PROMPT_SKILL_DEFINITIONS } from "../scripts/skill-bundle.mjs";
+import { PROMPT_SKILL_DEFINITIONS, PROMPT_SKILL_IDS } from "../scripts/skill-bundle.mjs";
 
 const REFERENCE_FILES = [
   "aesthetic-constraints.md",
@@ -200,13 +200,30 @@ test("Image loader preloads mandatory routing docs and exposes nested references
   const skill = await loadPromptSkillContext("image", fixture.skillPath);
 
   assert.equal(skill.id, "image");
+  assert.ok(PROMPT_SKILL_IDS.includes("nanobanana"));
+  assert.ok(PROMPT_SKILL_IDS.includes("none"));
   assert.match(skill.instructions, new RegExp(`image@${skill.hash}`));
   assert.match(skill.instructions, /references\/models\.md/);
+  assert.match(skill.instructions, /--- references\/gpt-image\.md ---/);
   assert.match(skill.instructions, /references\/golden-rules\.md/);
   const schema = skill.referenceTool.function.inputSchema;
   assert.equal(schema.safeParse({ name: "references/gpt-image.md" }).success, true);
   assert.equal(schema.safeParse({ name: "references/patterns/ecommerce.md" }).success, true);
   assert.equal(schema.safeParse({ name: "references/unknown.md" }).success, false);
+});
+
+test("Nano Banana adapter reuses Image files but preloads Nano-specific rules", async (t) => {
+  const fixture = await createImageFixture(t);
+  const skill = await loadPromptSkillContext("nanobanana", fixture.skillPath);
+
+  assert.equal(skill.id, "nanobanana");
+  assert.match(skill.instructions, new RegExp(`nanobanana@${skill.hash}`));
+  assert.match(skill.instructions, /--- references\/models\.md ---/);
+  assert.match(skill.instructions, /--- references\/nano-banana\.md ---/);
+  assert.match(skill.instructions, /--- references\/golden-rules\.md ---/);
+  const schema = skill.referenceTool.function.inputSchema;
+  assert.equal(schema.safeParse({ name: "references/nano-banana.md" }).success, true);
+  assert.equal(schema.safeParse({ name: "references/patterns/ecommerce.md" }).success, true);
 });
 
 test("Photoreal loader preloads its library index and whitelists scene categories", async (t) => {

@@ -26,13 +26,13 @@ Use these semantic `nodeType` values in `add_node` operations:
 - `text`: editable text input/output node. Set `text` in the operation or `data.text`/`data.prompt`.
 - `image`: image input/output and preview node.
 - `video`: video input/output and preview node.
-- `prompt`: the “编辑改写” prompt-generation node. Configure `data.provider`, `data.model`, `data.reasoningEffort`, `data.skillId`, and `data.instruction`.
+- `prompt`: the “编辑改写” prompt-generation node. Configure `data.provider`, `data.model`, `data.reasoningEffort`, `data.skillId`, and `data.instruction`. Use `skillId: "none"` for a generic prompt task that loads no Skill, `skillId: "nanobanana"` for Nano Banana prompts, and `skillId: "image"` for GPT Image prompts.
 - `prompt_editor`: two-part prompt editing node. Configure `data.instruction`; load the original prompt through a text connection or `data.prompt`.
 - `image_generator`: configure `data.imageProvider`, `data.imageModel`, `data.resolution`, `data.ratio`, and either `data.instruction` or a connected text prompt.
 - `video_generator`: configure `data.videoGenerationProvider`, `data.videoGenerationModel`, `data.videoGenerationMode`, `data.videoGenerationResolution`, `data.duration`, `data.ratio`, and `data.generateAudio`.
 - `group`: visual group container. Prefer the `group` operation with `nodeIds` instead of creating one manually.
 
-Supported prompt skills are `seedance`, `image`, and `photoreal`. The generation nodes themselves do not load skills; a prompt node can prepare their upstream text.
+Supported prompt modes are `none`, `seedance`, `nanobanana`, `image`, and `photoreal`. `none` is an explicit no-Skill mode: Agent Canvas must not read, mount, inject, imitate, or claim to use any Skill for that task. `nanobanana` and `image` are two model-specific adapters over the same installed Image skill: Nano Banana uses natural-language prompt structure, while GPT Image uses its labeled five-slot structure. The generation nodes themselves do not load skills; a prompt node can prepare their upstream text.
 
 ## Connections
 

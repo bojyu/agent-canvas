@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { AGENT_OUTPUT_SCHEMA, validateStructuredResult } from "./agent-protocol.mjs";
 import {
+  isPromptSkillDisabled,
   loadPromptSkillBundle,
   promptSkillInstructions,
 } from "./skill-bundle.mjs";
@@ -411,6 +412,16 @@ export function buildAntigravityPrompt(bundle, textPrompt, outputSchema, attachm
     ? `Workspace root (absolute): ${String(workspacePath).replace(/\\/g, "/")}`
     : "Workspace root: current working directory only.";
 
+  const guidance = bundle
+    ? [
+        `The following locally bundled ${bundle.label} skill is mandatory.`,
+        promptSkillInstructions(bundle, { includeAllReferences: true }),
+      ]
+    : [
+        "The user explicitly selected No Skill. No skill bundle is mounted.",
+        "Do not load, call, imitate, search for, or claim to use any skill. Follow only the Agent Canvas task.",
+      ];
+
   return [
     "You are the isolated Antigravity provider for Agent Canvas.",
     "Hard rules:",
@@ -420,8 +431,7 @@ export function buildAntigravityPrompt(bundle, textPrompt, outputSchema, attachm
     "4) Your final message must be exactly one JSON object with keys prompt, title, changes.",
     "5) No markdown fences, no commentary before or after the JSON.",
     workspaceHint,
-    `The following locally bundled ${bundle.label} skill is mandatory.`,
-    promptSkillInstructions(bundle, { includeAllReferences: true }),
+    ...guidance,
     "\n--- Local media files ---\n",
     mediaLines,
     "\n--- Agent Canvas task ---\n",
@@ -453,11 +463,13 @@ async function materializeWorkspace(bundle, attachments = []) {
   const workspacePath = await mkdtemp(join(tmpdir(), "prompt-flow-antigravity-"));
   const mediaDir = join(workspacePath, "media");
   await mkdir(mediaDir, { recursive: true });
-  const skillRoot = join(workspacePath, ".agents", "skills", bundle.id);
-  for (const document of bundle.documents) {
-    const destination = join(skillRoot, ...document.name.split("/"));
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, document.content, "utf8");
+  if (bundle) {
+    const skillRoot = join(workspacePath, ".agents", "skills", bundle.id);
+    for (const document of bundle.documents) {
+      const destination = join(skillRoot, ...document.name.split("/"));
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, document.content, "utf8");
+    }
   }
   const preparedAttachments = [];
   for (const [index, attachment] of attachments.entries()) {
@@ -470,7 +482,9 @@ async function materializeWorkspace(bundle, attachments = []) {
   }
   await writeFile(
     join(workspacePath, "AGENTS.md"),
-    `# Agent Canvas Antigravity workspace\n\nRead-only ${bundle.label} prompt rewrite task. Do not modify files.\n`,
+    bundle
+      ? `# Agent Canvas Antigravity workspace\n\nRead-only ${bundle.label} prompt rewrite task. Do not modify files.\n`
+      : "# Agent Canvas Antigravity workspace\n\nNo Skill is loaded for this prompt rewrite task. Do not search for or use skills. Do not modify files.\n",
     "utf8",
   );
   return {
@@ -650,7 +664,8 @@ export async function runAntigravityRefine({
     throw new Error(status.message || "Antigravity 尚未就绪");
   }
 
-  const bundle = await loadPromptSkillBundle(skillId, skillPath || seedanceSkillPath);
+  const noSkill = isPromptSkillDisabled(skillId);
+  const bundle = noSkill ? null : await loadPromptSkillBundle(skillId, skillPath || seedanceSkillPath);
   const logicalSessionId = createAntigravitySessionId(threadId);
   const prepared = await materializeWorkspace(bundle, attachments);
   const command = await resolveAntigravityCommand(runtime);
@@ -733,12 +748,12 @@ export async function runAntigravityRefine({
           threadId: logicalSessionId,
           usage: null,
           provider: ANTIGRAVITY_PROVIDER_ID,
-          skill: true,
-          skillId: bundle.id,
-          skillHash: bundle.hash,
-          seedanceSkill: bundle.id === "seedance",
-          seedanceSkillId: bundle.id === "seedance" ? bundle.id : undefined,
-          seedanceSkillHash: bundle.id === "seedance" ? bundle.hash : undefined,
+          skill: !noSkill,
+          skillId: noSkill ? "none" : bundle.id,
+          skillHash: noSkill ? null : bundle.hash,
+          seedanceSkill: !noSkill && bundle.id === "seedance",
+          seedanceSkillId: !noSkill && bundle.id === "seedance" ? bundle.id : undefined,
+          seedanceSkillHash: !noSkill && bundle.id === "seedance" ? bundle.hash : undefined,
           sessionMode: "stateless",
           model,
           reasoningEffort,
@@ -775,12 +790,12 @@ export async function runAntigravityRefine({
       threadId: logicalSessionId,
       usage: null,
       provider: ANTIGRAVITY_PROVIDER_ID,
-      skill: true,
-      skillId: bundle.id,
-      skillHash: bundle.hash,
-      seedanceSkill: bundle.id === "seedance",
-      seedanceSkillId: bundle.id === "seedance" ? bundle.id : undefined,
-      seedanceSkillHash: bundle.id === "seedance" ? bundle.hash : undefined,
+      skill: !noSkill,
+      skillId: noSkill ? "none" : bundle.id,
+      skillHash: noSkill ? null : bundle.hash,
+      seedanceSkill: !noSkill && bundle.id === "seedance",
+      seedanceSkillId: !noSkill && bundle.id === "seedance" ? bundle.id : undefined,
+      seedanceSkillHash: !noSkill && bundle.id === "seedance" ? bundle.hash : undefined,
       sessionMode: "stateless",
       model,
       reasoningEffort,
