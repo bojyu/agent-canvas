@@ -38,13 +38,16 @@ import {
   runComflyLlmRefine,
 } from "./comfly-llm-provider.mjs";
 import {
+  allPromptSkillIds,
   LOADABLE_PROMPT_SKILL_IDS,
   PROMPT_SKILL_IDS,
   isImagePromptSkillId,
   isPromptSkillDisabled,
   normalizePromptSkillId,
   promptSkillDefinition,
+  setCustomPromptSkillDefinitions,
 } from "./skill-bundle.mjs";
+import { SkillRegistryStore } from "./skill-registry-store.mjs";
 import {
   IMAGE_GENERATION_PROVIDER_IDS,
   getImageGenerationProviderStatus,
@@ -92,6 +95,7 @@ const CODEX_TIMEOUT_MESSAGE = "Codex 处理超过 10 分钟，已停止；可降
 const dataDirectory = join(projectRoot, ".prompt-flow-data");
 const canvasDirectory = join(projectRoot, ".prompt-flow-data", "projects");
 const taskStorePath = join(dataDirectory, "tasks.json");
+const skillRegistryPath = join(dataDirectory, "skills.json");
 const moduleRequire = createRequire(import.meta.url);
 
 const CODEX_TARGETS = {
@@ -213,17 +217,33 @@ function isPromptSkill(path, skillId) {
 }
 
 const discoveredSkillFiles = findSkillFiles(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills"));
-const skillFiles = [...new Set([
+const builtinSkillFiles = [...new Set([
   ...discoveredSkillFiles,
   ...Object.values(explicitlyConfiguredSkillPaths).filter(Boolean),
 ])];
 const skillPaths = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [
   skillId,
-  skillId === "none" ? null : explicitlyConfiguredSkillPaths[skillId] || skillFiles.find((path) => isPromptSkill(path, skillId)),
+  skillId === "none" ? null : explicitlyConfiguredSkillPaths[skillId] || builtinSkillFiles.find((path) => isPromptSkill(path, skillId)),
 ]));
-const codexClients = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [
-  skillId,
-  new Codex({
+const skillRegistry = new SkillRegistryStore({ path: skillRegistryPath });
+let registeredSkillEntries = [];
+const codexClients = new Map();
+
+async function reloadSkillRegistry() {
+  registeredSkillEntries = await skillRegistry.list();
+  setCustomPromptSkillDefinitions(registeredSkillEntries);
+  for (const skillId of Object.keys(skillPaths)) {
+    if (skillId.startsWith("custom:")) delete skillPaths[skillId];
+  }
+  for (const entry of registeredSkillEntries) skillPaths[entry.id] = entry.path;
+  codexClients.clear();
+}
+
+function codexClientForSkill(skillId) {
+  if (codexClients.has(skillId)) return codexClients.get(skillId);
+  const selectedPath = skillPaths[skillId];
+  const allSkillFiles = [...new Set([...builtinSkillFiles, ...registeredSkillEntries.map((entry) => entry.path)])];
+  const client = new Codex({
     config: {
       features: {
         apps: false,
@@ -235,11 +255,15 @@ const codexClients = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [
       },
       // Each client exposes only the skill selected by the canvas task.
       skills: {
-        config: skillFiles.map((path) => ({ path, enabled: isPromptSkill(path, skillId) })),
+        config: allSkillFiles.map((path) => ({ path, enabled: Boolean(selectedPath) && resolve(path) === resolve(selectedPath) })),
       },
     },
-  }),
-]));
+  });
+  codexClients.set(skillId, client);
+  return client;
+}
+
+await reloadSkillRegistry();
 
 const taskRecords = new Map();
 const taskPayloads = new Map();
@@ -451,6 +475,79 @@ async function renameProject(id, name) {
   return projectStore.renameProject(id, name);
 }
 
+function skillRegistryItems() {
+  const builtins = PROMPT_SKILL_IDS.map((id) => {
+    const definition = promptSkillDefinition(id);
+    return {
+      id,
+      name: definition.taskLabel,
+      label: definition.taskLabel,
+      description: id === "none" ? "明确禁用 Skill 注入" : `${definition.label} 内置适配`,
+      path: skillPaths[id] || "",
+      builtin: true,
+      removable: false,
+      ready: id === "none" || Boolean(skillPaths[id]),
+      adapter: id === "nanobanana" ? "Nano Banana" : id === "image" ? "GPT Image" : undefined,
+    };
+  });
+  return [...builtins, ...registeredSkillEntries.map((entry) => ({
+    ...entry,
+    ready: Boolean(skillPaths[entry.id]),
+    removable: true,
+    builtin: false,
+  }))];
+}
+
+async function projectsUsingSkill(skillId) {
+  const summaries = await listProjects();
+  const usages = [];
+  for (const summary of summaries) {
+    const project = await readProject(summary.id);
+    const nodeIds = project?.nodes
+      ?.filter((node) => node?.type === "skill" && node?.data?.skillId === skillId)
+      .map((node) => node.id) || [];
+    if (nodeIds.length) usages.push({ projectId: summary.id, projectName: summary.name, nodeIds });
+  }
+  return usages;
+}
+
+async function handleSkillRequest(request, response, requestUrl) {
+  const { pathname, searchParams } = requestUrl;
+  if (request.method === "GET" && pathname === "/skills") {
+    const query = String(searchParams.get("q") || "").trim().toLowerCase();
+    const skills = skillRegistryItems().filter((item) => !query || [item.name, item.description, item.id, item.path].some((value) => String(value || "").toLowerCase().includes(query)));
+    sendJson(response, 200, { skills });
+    return true;
+  }
+  if (request.method === "POST" && pathname === "/skills") {
+    const entry = await skillRegistry.register((await readJson(request)).path);
+    await reloadSkillRegistry();
+    sendJson(response, 201, { skill: skillRegistryItems().find((item) => item.id === entry.id) });
+    return true;
+  }
+  const match = pathname.match(/^\/skills\/([^/]+)$/);
+  if (!match) return false;
+  const skillId = decodeURIComponent(match[1]);
+  if (request.method === "POST") {
+    const entry = await skillRegistry.refresh(skillId);
+    await reloadSkillRegistry();
+    sendJson(response, 200, { skill: skillRegistryItems().find((item) => item.id === entry.id) });
+    return true;
+  }
+  if (request.method === "DELETE") {
+    const usages = await projectsUsingSkill(skillId);
+    if (usages.length) {
+      sendJson(response, 409, { error: "这个 Skill 仍被已保存画布使用，请先断开或更换节点", usages });
+      return true;
+    }
+    await skillRegistry.unregister(skillId);
+    await reloadSkillRegistry();
+    sendJson(response, 200, { removed: skillId, deletedFiles: false });
+    return true;
+  }
+  return false;
+}
+
 async function handleProjectRequest(request, response, pathname) {
   if (request.method === "GET" && pathname === "/projects") {
     sendJson(response, 200, { projects: await listProjects() });
@@ -561,6 +658,33 @@ ${isRevision
 3. 参考素材按下面的附件映射理解，不得把附件顺序误当成素材编号。
 4. 不强制套用任何特定模型格式；保持用户原有语言和用途，除非修改建议明确要求改变。
 5. 最终可复制内容完整放入 JSON 的 prompt 字段；title 用 12 字以内概括，changes 用一句中文概括本次生成或修改。
+
+生成规格：
+${spec}
+
+参考素材附件映射：
+${attachmentMap}
+
+${isRevision ? "当前完整提示词" : "用户原始需求"}：
+${String(payload.prompt || "")}
+
+${isRevision ? "本次修改建议" : "执行要求"}：
+${String(payload.instruction || "")}
+
+请严格按 JSON Schema 返回。`;
+  }
+  if (skill.custom) {
+    return `本任务必须且只能使用已经加载到当前 Agent 上下文中的 ${skill.label} Skill。不要调用其他 Skill。
+
+${isRevision
+  ? "这是修改模式。只按“本次修改建议”修改“当前完整提示词”，返回一份完整替换版本；未提及的内容应尽量保持不变。"
+  : "这是直接生成模式。根据用户原始需求生成一份完整、可复制使用的提示词。"}
+
+硬性要求：
+1. ${skill.safetyInstruction}
+2. 严格遵守该 Skill 的 SKILL.md 和它允许读取的参考文件。
+3. 只使用已连接的 @图片N / @视频N 编号，不得虚构引用。
+4. 最终内容完整放入 JSON 的 prompt 字段；title 用 12 字以内概括，changes 用一句中文概括本次处理。
 
 生成规格：
 ${spec}
@@ -1172,7 +1296,7 @@ async function executeRefine(payload, { signal, onStage } = {}) {
       webSearchMode: "disabled",
       modelReasoningEffort: reasoningEffort,
     };
-    const codex = codexClients[skillId];
+    const codex = codexClientForSkill(skillId);
     const thread = payload.threadId ? codex.resumeThread(payload.threadId, options) : codex.startThread(options);
     const runController = new AbortController();
     let runTimedOut = false;
@@ -1585,7 +1709,10 @@ async function initializeTaskHistory() {
           : item.provider === COMFLY_LLM_PROVIDER_ID
             ? COMFLY_LLM_PROVIDER_ID
             : "codex",
-      skillId: mediaTask ? undefined : PROMPT_SKILL_IDS.includes(item.skillId) ? item.skillId : "seedance",
+      skillId: mediaTask ? undefined : (() => {
+        try { return normalizePromptSkillId(item.skillId); }
+        catch { return "seedance"; }
+      })(),
       projectId: typeof item.projectId === "string" && validProjectId(item.projectId) ? item.projectId : null,
       status: interrupted ? "failed" : item.status,
       stage: interrupted ? "failed" : item.stage,
@@ -1991,6 +2118,14 @@ const server = createServer(async (request, response) => {
     return;
   }
   try {
+    if (await handleSkillRequest(request, response, requestUrl)) return;
+  } catch (error) {
+    sendJson(response, error instanceof HttpError ? error.status : 400, {
+      error: error instanceof Error ? error.message : "Skill 管理失败",
+    });
+    return;
+  }
+  try {
     if (await handleProjectEvents(request, response, pathname)) return;
     if (await handleAutomationRequest(request, response, requestUrl)) return;
   } catch (error) {
@@ -2152,7 +2287,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && pathname === "/health") {
-    const availableSkills = Object.fromEntries(PROMPT_SKILL_IDS.map((skillId) => [skillId, {
+    const availableSkills = Object.fromEntries(allPromptSkillIds().map((skillId) => [skillId, {
       id: skillId,
       label: promptSkillDefinition(skillId).taskLabel,
       ready: skillId === "none" || Boolean(skillPaths[skillId]),
@@ -2225,6 +2360,6 @@ await initializeTaskHistory();
 await backfillCompletedMediaOutputs();
 
 server.listen(PORT, "127.0.0.1", () => {
-  const skillStatus = PROMPT_SKILL_IDS.map((skillId) => `${skillId}: ${skillPaths[skillId] ? "ready" : "missing"}`).join(", ");
+  const skillStatus = allPromptSkillIds().map((skillId) => `${skillId}: ${skillId === "none" || skillPaths[skillId] ? "ready" : "missing"}`).join(", ");
   console.log(`Codex bridge ready: http://127.0.0.1:${PORT} (${skillStatus})`);
 });

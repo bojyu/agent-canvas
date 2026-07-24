@@ -57,6 +57,45 @@ test("group and ungroup preserve absolute member positions", () => {
   assert.deepEqual(ungrouped.nodes.find((node) => node.id === "b").position, { x: 600, y: 220 });
 });
 
+test("group membership can add and remove nodes without moving them or changing edges", () => {
+  const input = project([
+    createCanvasNode("text", { id: "brief", position: { x: 120, y: 180 }, text: "hello" }),
+    createCanvasNode("image_generator", { id: "generator", position: { x: 640, y: 180 } }),
+    createCanvasNode("image", { id: "reference", position: { x: -180, y: 40 } }),
+  ], [
+    { id: "prompt-edge", source: "brief", target: "generator", targetHandle: "prompt", type: "disconnectable" },
+  ]);
+  const grouped = applyCanvasOperations(input, [{ op: "group", id: "group-1", nodeIds: ["brief", "generator"] }]).project;
+  const beforeGroup = grouped.nodes.find((node) => node.id === "group-1");
+  const beforeBrief = grouped.nodes.find((node) => node.id === "brief");
+  const briefAbsolute = {
+    x: beforeGroup.position.x + beforeBrief.position.x,
+    y: beforeGroup.position.y + beforeBrief.position.y,
+  };
+  const added = applyCanvasOperations(grouped, [{ op: "add_to_group", groupId: "group-1", nodeIds: ["reference"] }]).project;
+  const addedGroup = added.nodes.find((node) => node.id === "group-1");
+  const addedBrief = added.nodes.find((node) => node.id === "brief");
+  const addedReference = added.nodes.find((node) => node.id === "reference");
+  assert.equal(addedReference.parentId, "group-1");
+  assert.deepEqual({
+    x: addedGroup.position.x + addedReference.position.x,
+    y: addedGroup.position.y + addedReference.position.y,
+  }, { x: -180, y: 40 });
+  assert.deepEqual({
+    x: addedGroup.position.x + addedBrief.position.x,
+    y: addedGroup.position.y + addedBrief.position.y,
+  }, briefAbsolute);
+  assert.deepEqual(added.edges, grouped.edges);
+  assert.equal(addedGroup.data.memberCount, 3);
+
+  const removed = applyCanvasOperations(added, [{ op: "remove_from_group", groupId: "group-1", nodeIds: ["reference"] }]).project;
+  const removedReference = removed.nodes.find((node) => node.id === "reference");
+  assert.equal(removedReference.parentId, undefined);
+  assert.deepEqual(removedReference.position, { x: -180, y: 40 });
+  assert.deepEqual(removed.edges, grouped.edges);
+  assert.equal(removed.nodes.find((node) => node.id === "group-1").data.memberCount, 2);
+});
+
 test("compact inspection never returns inline media", () => {
   const input = project([
     createCanvasNode("image", {
@@ -128,6 +167,25 @@ test("No Skill prompt mode compiles without model-specific guidance", () => {
   assert.equal(request.payload.skillId, "none");
   assert.match(request.payload.instruction, /不要加载或调用任何 Skill/);
   assert.doesNotMatch(request.payload.instruction, /Seedance2|Nano Banana|GPT Image/);
+});
+
+test("connected Skill node overrides the prompt editor legacy Skill", () => {
+  const nodes = [
+    createCanvasNode("skill", { id: "skill-config", data: { skillId: "image" } }),
+    createCanvasNode("text", { id: "original", text: "A complete product prompt" }),
+    createCanvasNode("prompt_editor", {
+      id: "editor",
+      data: { provider: "codex", model: "gpt-5.6", skillId: "seedance", instruction: "Keep the chair, change the room" },
+    }),
+    createCanvasNode("text", { id: "output" }),
+  ];
+  const request = buildNodeTaskRequest(project(nodes, [
+    { id: "skill-edge", source: "skill-config", target: "editor", targetHandle: "skill", type: "disconnectable" },
+    { id: "prompt-edge", source: "original", target: "editor", targetHandle: "original-prompt", type: "disconnectable" },
+    { id: "output-edge", source: "editor", target: "output", type: "disconnectable" },
+  ]), "editor");
+  assert.equal(request.payload.skillId, "image");
+  assert.equal(request.payload.spec.skillId, "image");
 });
 
 test("image generator compiles graph connections into a task request", () => {

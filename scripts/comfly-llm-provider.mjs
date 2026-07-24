@@ -180,6 +180,12 @@ const REFERENCE_ROUTES = Object.freeze({
 });
 
 export function buildComflySkillInstructions(bundle, textPrompt = "") {
+  if (bundle.id.startsWith("custom:")) {
+    return [
+      promptSkillInstructions(bundle, { includeAllReferences: true }),
+      "\n只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要输出 JSON 之外的任何内容。对象必须且只能包含 prompt、title、changes 三个非空字符串字段。",
+    ].join("\n");
+  }
   const routedNames = bundle.id === "nanobanana"
     ? ["references/nano-banana.md"]
     : bundle.id === "image"

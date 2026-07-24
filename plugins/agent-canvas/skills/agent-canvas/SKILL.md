@@ -26,13 +26,22 @@ Use these semantic `nodeType` values in `add_node` operations:
 - `text`: editable text input/output node. Set `text` in the operation or `data.text`/`data.prompt`.
 - `image`: image input/output and preview node.
 - `video`: video input/output and preview node.
+- `skill`: prompt Skill configuration and management node. Set `data.skillId`, then connect it to a `prompt_editor` node. Use `canvas_list_skills` to obtain exact built-in or `custom:*` IDs.
 - `prompt`: the “编辑改写” prompt-generation node. Configure `data.provider`, `data.model`, `data.reasoningEffort`, `data.skillId`, and `data.instruction`. Use `skillId: "none"` for a generic prompt task that loads no Skill, `skillId: "nanobanana"` for Nano Banana prompts, and `skillId: "image"` for GPT Image prompts.
 - `prompt_editor`: two-part prompt editing node. Configure `data.instruction`; load the original prompt through a text connection or `data.prompt`.
 - `image_generator`: configure `data.imageProvider`, `data.imageModel`, `data.resolution`, `data.ratio`, and either `data.instruction` or a connected text prompt.
 - `video_generator`: configure `data.videoGenerationProvider`, `data.videoGenerationModel`, `data.videoGenerationMode`, `data.videoGenerationResolution`, `data.duration`, `data.ratio`, and `data.generateAudio`.
 - `group`: visual group container. Prefer the `group` operation with `nodeIds` instead of creating one manually.
 
+Group membership can be changed without rebuilding the group or its connections:
+
+- `{ "op": "add_to_group", "groupId": "group-id", "nodeIds": ["node-a", "node-b"] }` adds ungrouped nodes, preserves their absolute positions, and expands the group when needed.
+- `{ "op": "remove_from_group", "nodeIds": ["node-a"] }` removes only the listed members, preserves their absolute positions and connections, and keeps the group.
+- `ungroup` still removes the whole group container and releases every member.
+
 Supported prompt modes are `none`, `seedance`, `nanobanana`, `image`, and `photoreal`. `none` is an explicit no-Skill mode: Agent Canvas must not read, mount, inject, imitate, or claim to use any Skill for that task. `nanobanana` and `image` are two model-specific adapters over the same installed Image skill: Nano Banana uses natural-language prompt structure, while GPT Image uses its labeled five-slot structure. The generation nodes themselves do not load skills; a prompt node can prepare their upstream text.
+
+Custom local Skills can be registered with `canvas_register_skill`, refreshed with `canvas_refresh_skill`, and removed from the registry with `canvas_unregister_skill`. Registration validates `SKILL.md` and a bounded set of text references. Unregistering never deletes source files, refuses built-ins, and refuses a custom Skill still referenced by a saved canvas.
 
 ## Connections
 
@@ -40,6 +49,7 @@ Use `connect` operations with these handles:
 
 - Text to image/video generator: `targetHandle: "prompt"`.
 - Text to prompt editor: `targetHandle: "original-prompt"`.
+- Skill to prompt editor: `targetHandle: "skill"`. A connected Skill node overrides the editor's legacy inline `data.skillId`.
 - Image/video reference to a compatible prompt or generator node: `targetHandle: "media-1"` through `"media-12"`.
 - Processor to matching output node: omit `targetHandle`.
 

@@ -40,8 +40,8 @@ import {
 
 gsap.registerPlugin(useGSAP);
 
-type NodeKind = "reference" | "video" | "textBox" | "codex" | "promptEditor" | "imageGenerator" | "videoGenerator" | "imageOutput" | "videoOutput" | "output" | "revision" | "revisedOutput" | "textInput" | "textOutput" | "group";
-type PaletteNodeKind = "reference" | "video" | "text" | "codex" | "prompteditor" | "imagegenerator" | "videogenerator";
+type NodeKind = "reference" | "video" | "textBox" | "skill" | "codex" | "promptEditor" | "imageGenerator" | "videoGenerator" | "imageOutput" | "videoOutput" | "output" | "revision" | "revisedOutput" | "textInput" | "textOutput" | "group";
+type PaletteNodeKind = "reference" | "video" | "text" | "skill" | "codex" | "prompteditor" | "imagegenerator" | "videogenerator";
 type FlowPresetId = "prompt" | "image-generation" | "video-generation";
 type ThemePreference = "light" | "dark" | "system";
 type ApiKeyName = "OPENROUTER_API_KEY" | "GEMINI_API_KEY" | "COMFLY_API_KEY" | "COMFLY_LLM_API_KEY" | "COMFLY_GPT_IMAGE_2_1K_API_KEY" | "COMFLY_GPT_IMAGE_2_2K_API_KEY" | "COMFLY_GPT_IMAGE_2_4K_API_KEY";
@@ -54,7 +54,19 @@ type MediaSlot = {
   hasMedia: boolean;
 };
 type AgentProvider = "codex" | "openrouter" | "comfly" | "grok-build" | "antigravity";
-type PromptSkillId = "none" | "seedance" | "nanobanana" | "image" | "photoreal";
+type PromptSkillId = "none" | "seedance" | "nanobanana" | "image" | "photoreal" | `custom:${string}`;
+type SkillRegistryItem = {
+  id: PromptSkillId;
+  name: string;
+  label: string;
+  description?: string;
+  path?: string;
+  version?: string;
+  builtin: boolean;
+  removable: boolean;
+  ready: boolean;
+  adapter?: string;
+};
 type ImageGenerationProvider = "openrouter" | "google" | "comfly";
 type ImageGenerationResolution = "1K" | "2K" | "4K";
 type ImageGenerationModelOption = {
@@ -182,6 +194,10 @@ type GraphData = Record<string, unknown> & {
   inputSlots?: MediaSlot[];
   promptConnected?: boolean;
   promptInput?: string;
+  skillConnected?: boolean;
+  skillInputId?: PromptSkillId;
+  skillInputLabel?: string;
+  skillRegistry?: SkillRegistryItem[];
   generatedImages?: GeneratedImage[];
   generatedVideos?: GeneratedVideo[];
   imageError?: string;
@@ -189,11 +205,15 @@ type GraphData = Record<string, unknown> & {
   generationMeta?: string;
   assignedMarkers?: string[];
   memberCount?: number;
+  groupDropTarget?: boolean;
   onUpdate?: (patch: Partial<GraphData>) => void;
   onDelete?: () => void;
   onRun?: () => void;
   onCopy?: () => void;
   onPaste?: () => void;
+  onRegisterSkill?: (path: string) => Promise<void>;
+  onRefreshSkill?: (skillId: PromptSkillId) => Promise<void>;
+  onUnregisterSkill?: (skillId: PromptSkillId) => Promise<void>;
 };
 
 type GraphNode = Node<GraphData>;
@@ -280,13 +300,24 @@ const PROVIDER_LABELS: Record<AgentProvider, string> = {
   antigravity: "Antigravity",
 };
 const PROMPT_SKILLS: PromptSkillId[] = ["none", "seedance", "nanobanana", "image", "photoreal"];
-const PROMPT_SKILL_LABELS: Record<PromptSkillId, string> = {
+const PROMPT_SKILL_LABELS: Record<string, string> = {
   none: "不加载 Skill",
   seedance: "Seedance 视频提示词",
   nanobanana: "Nano Banana 图像提示词",
   image: "GPT Image 图像提示词",
   photoreal: "真实感场景与模特图",
 };
+function promptSkillLabel(skillId: PromptSkillId, registry: SkillRegistryItem[] = []) {
+  return registry.find((item) => item.id === skillId)?.label || PROMPT_SKILL_LABELS[skillId] || skillId.replace(/^custom:/, "");
+}
+const DEFAULT_SKILL_REGISTRY: SkillRegistryItem[] = PROMPT_SKILLS.map((id) => ({
+  id,
+  name: PROMPT_SKILL_LABELS[id],
+  label: PROMPT_SKILL_LABELS[id],
+  builtin: true,
+  removable: false,
+  ready: true,
+}));
 const ASPECT_RATIOS = ["Auto", "1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "5:4", "4:5", "21:9"] as const;
 const IMAGE_GENERATION_RESOLUTIONS: ImageGenerationResolution[] = ["1K", "2K", "4K"];
 const IMAGE_GENERATION_PROVIDER_IDS: ImageGenerationProvider[] = ["openrouter", "google", "comfly"];
@@ -354,6 +385,8 @@ const TASK_SUBMIT_TIMEOUT_MS = 30_000;
 const MAX_PORTABLE_NODES = 500;
 const MAX_PORTABLE_EDGES = 2_000;
 const MAX_PORTABLE_FILE_BYTES = 200_000_000;
+const CANVAS_MIN_ZOOM = 0.06;
+const CANVAS_MAX_ZOOM = 1.5;
 
 function storedThemePreference(): ThemePreference {
   if (typeof window === "undefined") return "system";
@@ -433,7 +466,7 @@ function normalizeVideoGenerationProvider(provider: unknown): VideoGenerationPro
 
 function normalizePromptSkill(skillId: unknown): PromptSkillId {
   if (skillId === undefined || skillId === null || skillId === "") return "seedance";
-  if (skillId === "none" || skillId === "seedance" || skillId === "nanobanana" || skillId === "image" || skillId === "photoreal") return skillId;
+  if (skillId === "none" || skillId === "seedance" || skillId === "nanobanana" || skillId === "image" || skillId === "photoreal" || (typeof skillId === "string" && skillId.startsWith("custom:"))) return skillId as PromptSkillId;
   throw new Error(`不支持的提示词 Skill：${String(skillId)}`);
 }
 
@@ -721,6 +754,60 @@ function ModelControls({ data, helper, mediaAware = false }: { data: GraphData; 
   );
 }
 
+function SkillNode({ data }: NodeProps<GraphNode>) {
+  const registry = data.skillRegistry || [];
+  const skillId = normalizePromptSkill(data.skillId || "none");
+  const selected = registry.find((item) => item.id === skillId);
+  const options = selected ? registry : [{ id: skillId, name: promptSkillLabel(skillId), label: `${promptSkillLabel(skillId)} · 未注册`, builtin: false, removable: false, ready: false }, ...registry] as SkillRegistryItem[];
+  const [query, setQuery] = useState("");
+  const [path, setPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const visible = registry.filter((item) => !query.trim() || [item.label, item.description, item.path].some((value) => String(value || "").toLowerCase().includes(query.trim().toLowerCase())));
+  const runAction = async (action: () => Promise<void>) => {
+    setBusy(true);
+    try { await action(); }
+    finally { setBusy(false); }
+  };
+  return (
+    <NodeFrame data={data} tone="skill" output>
+      <div className="skill-node-summary">
+        <label className="skill-selector nodrag">
+          <span>当前 Skill</span>
+          <select value={skillId} onChange={(event) => data.onUpdate?.({ skillId: normalizePromptSkill(event.target.value), threadId: undefined })}>
+            {options.map((item) => <option value={item.id} disabled={!item.ready} key={item.id}>{item.label}{item.ready ? "" : " · 未就绪"}</option>)}
+          </select>
+        </label>
+        <div className={`skill-status ${selected?.ready ? "ready" : "missing"}`}>
+          <i />
+          <span>{selected?.ready ? selected.builtin ? "内置 Skill 已就绪" : "自定义 Skill 已注册" : "Skill 未就绪"}</span>
+        </div>
+        {selected?.description && <p>{selected.description}</p>}
+        {selected?.adapter && <small>适配器：{selected.adapter}</small>}
+      </div>
+      <details className="skill-manager nodrag">
+        <summary>管理 Skill <span>添加 · 检索 · 移除</span></summary>
+        <label className="skill-search"><span>检索</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称、说明或路径" /></label>
+        <div className="skill-manager-list">
+          {visible.map((item) => (
+            <button type="button" className={item.id === skillId ? "selected" : ""} disabled={!item.ready} onClick={() => data.onUpdate?.({ skillId: item.id, threadId: undefined })} key={item.id}>
+              <span><b>{item.label}</b><small>{item.builtin ? "内置" : item.path || "自定义"}</small></span>
+              <i>{item.ready ? "可用" : "缺失"}</i>
+            </button>
+          ))}
+          {!visible.length && <div className="skill-manager-empty">没有匹配的 Skill</div>}
+        </div>
+        <label className="skill-path-input"><span>本地 Skill 路径</span><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="D:\...\Skill 或 SKILL.md" /></label>
+        <div className="skill-manager-actions">
+          <button type="button" disabled={busy || !path.trim()} onClick={() => void runAction(async () => { await data.onRegisterSkill?.(path.trim()); setPath(""); })}>添加</button>
+          <button type="button" disabled={busy || !selected || selected.builtin} onClick={() => void runAction(() => data.onRefreshSkill?.(skillId) || Promise.resolve())}>刷新</button>
+          <button type="button" className="danger" disabled={busy || !selected?.removable} title="只取消 Agent Canvas 注册，不删除磁盘文件" onClick={() => void runAction(() => data.onUnregisterSkill?.(skillId) || Promise.resolve())}>移除注册</button>
+        </div>
+        <small className="skill-manager-note">移除只影响 Agent Canvas，不会删除本地文件；内置 Skill 不可移除。</small>
+      </details>
+    </NodeFrame>
+  );
+}
+
 function CodexNode({ data }: NodeProps<GraphNode>) {
   const skillId = normalizePromptSkill(data.skillId);
   const imagePromptSkill = isImagePromptSkill(skillId);
@@ -766,11 +853,18 @@ function PromptEditorNode({ data }: NodeProps<GraphNode>) {
   const promptCount = originalPrompt.replace(/\s/g, "").length;
   const instruction = String(data.instruction || "");
   const instructionCount = instruction.replace(/\s/g, "").length;
-  const skillId = normalizePromptSkill(data.skillId);
+  const skillId = normalizePromptSkill(data.skillConnected ? data.skillInputId : data.skillId);
+  const registry = data.skillRegistry || [];
   return (
     <NodeFrame data={data} tone="prompt-editor" output>
       <div className="editor-mode"><i />只修改现有提示词，不重新生成创意</div>
-      <label className="skill-selector nodrag"><span>提示词 Skill</span><select value={skillId} onChange={(event) => data.onUpdate?.({ skillId: normalizePromptSkill(event.target.value), threadId: undefined })}>{PROMPT_SKILLS.map((id) => <option value={id} key={id}>{PROMPT_SKILL_LABELS[id]}</option>)}</select></label>
+      <label className={`skill-selector nodrag ${data.skillConnected ? "is-linked" : ""}`}>
+        <Handle id="skill" type="target" position={Position.Left} className="prompt-editor-skill-handle" />
+        <span>{data.skillConnected ? "已接入 Skill" : "提示词 Skill"}</span>
+        {data.skillConnected
+          ? <strong>{data.skillInputLabel || promptSkillLabel(skillId, registry)}</strong>
+          : <select value={skillId} onChange={(event) => data.onUpdate?.({ skillId: normalizePromptSkill(event.target.value), threadId: undefined })}>{registry.map((item) => <option value={item.id} disabled={!item.ready} key={item.id}>{item.label}</option>)}</select>}
+      </label>
       <ModelControls data={data} helper="用于提示词修改" />
       <div className="prompt-editor-fields">
         <label className="prompt-editor-field nodrag">
@@ -1035,6 +1129,7 @@ function TextBoxNode({ data, selected }: NodeProps<GraphNode>) {
 
 function CanvasGroupNode({ data, selected }: NodeProps<GraphNode>) {
   const memberCount = Number(data.memberCount || 0);
+  const dropTarget = data.groupDropTarget === true;
   const title = String(data.title || "群组");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(title);
@@ -1058,7 +1153,7 @@ function CanvasGroupNode({ data, selected }: NodeProps<GraphNode>) {
         handleClassName="group-resize-handle"
         lineClassName="group-resize-line"
       />
-      <div className={`canvas-group-frame ${selected ? "is-selected" : ""}`} title="拖动群组外框可整体移动；选中后可从边缘调整大小；Ctrl/Cmd + Backspace 解组">
+      <div className={`canvas-group-frame ${selected ? "is-selected" : ""} ${dropTarget ? "is-drop-target" : ""}`} title="拖动节点进入群组可添加成员；拖动群组外框可整体移动；选中后可从边缘调整大小">
         <div className="canvas-group-caption">
           <span aria-hidden="true">组</span>
           {editingTitle ? (
@@ -1084,7 +1179,7 @@ function CanvasGroupNode({ data, selected }: NodeProps<GraphNode>) {
           ) : (
             <button className="nodrag nopan group-title-button" type="button" title="双击重命名" onDoubleClick={(event) => { event.stopPropagation(); beginRename(); }}>{title}</button>
           )}
-          <small>{memberCount} 个节点</small>
+          <small>{dropTarget ? "松开加入群组" : `${memberCount} 个节点`}</small>
           {selected && !editingTitle && <button className="nodrag nopan group-rename-button" type="button" aria-label="重命名群组" title="重命名群组" onClick={(event) => { event.stopPropagation(); beginRename(); }}>✎</button>}
         </div>
       </div>
@@ -1096,6 +1191,7 @@ const nodeTypes = {
   group: CanvasGroupNode,
   reference: ReferenceNode,
   video: VideoNode,
+  skill: SkillNode,
   codex: CodexNode,
   prompteditor: PromptEditorNode,
   imagegenerator: ImageGeneratorNode,
@@ -1248,6 +1344,7 @@ const MAX_HISTORY_ENTRIES = 50;
 const GROUP_PADDING_X = 42;
 const GROUP_PADDING_TOP = 64;
 const GROUP_PADDING_BOTTOM = 42;
+const GROUP_DROP_OVERLAP_RATIO = 0.4;
 
 function nodeVisualSize(node: GraphNode) {
   const styleWidth = typeof node.style?.width === "number" ? node.style.width : Number.parseFloat(String(node.style?.width || ""));
@@ -1283,6 +1380,106 @@ function detachNodeFromGroup(node: GraphNode, position: { x: number; y: number }
   delete detached.extent;
   delete detached.expandParent;
   return detached;
+}
+
+function addNodesToExistingGroup(nodes: GraphNode[], groupId: string, nodeIds: Iterable<string>) {
+  const requestedIds = new Set(nodeIds);
+  const group = nodes.find((node) => node.id === groupId && node.type === "group");
+  const members = nodes.filter((node) => requestedIds.has(node.id) && node.type !== "group" && !node.parentId);
+  if (!group || !members.length) return nodes;
+
+  const groupSize = nodeVisualSize(group);
+  const memberBounds = members.map((node) => {
+    const position = absoluteNodePosition(node, nodes);
+    return { node, position, ...nodeVisualSize(node) };
+  });
+  const nextGroupPosition = {
+    x: Math.min(group.position.x, ...memberBounds.map(({ position }) => position.x - GROUP_PADDING_X)),
+    y: Math.min(group.position.y, ...memberBounds.map(({ position }) => position.y - GROUP_PADDING_TOP)),
+  };
+  const nextGroupRight = Math.max(
+    group.position.x + groupSize.width,
+    ...memberBounds.map(({ position, width }) => position.x + width + GROUP_PADDING_X),
+  );
+  const nextGroupBottom = Math.max(
+    group.position.y + groupSize.height,
+    ...memberBounds.map(({ position, height }) => position.y + height + GROUP_PADDING_BOTTOM),
+  );
+  const existingShift = {
+    x: group.position.x - nextGroupPosition.x,
+    y: group.position.y - nextGroupPosition.y,
+  };
+  const currentMemberCount = nodes.filter((node) => node.parentId === groupId).length;
+  const updated = nodes.map((node) => {
+    if (node.id === groupId) {
+      return {
+        ...node,
+        position: nextGroupPosition,
+        selected: true,
+        style: {
+          ...node.style,
+          width: Math.max(180, nextGroupRight - nextGroupPosition.x),
+          height: Math.max(140, nextGroupBottom - nextGroupPosition.y),
+        },
+        data: { ...node.data, memberCount: currentMemberCount + members.length },
+      };
+    }
+    if (node.parentId === groupId) {
+      return {
+        ...node,
+        position: {
+          x: node.position.x + existingShift.x,
+          y: node.position.y + existingShift.y,
+        },
+        selected: false,
+      };
+    }
+    const incoming = memberBounds.find(({ node: member }) => member.id === node.id);
+    if (!incoming) return node.selected ? { ...node, selected: false } : node;
+    return {
+      ...node,
+      parentId: groupId,
+      extent: "parent" as const,
+      expandParent: true,
+      position: {
+        x: incoming.position.x - nextGroupPosition.x,
+        y: incoming.position.y - nextGroupPosition.y,
+      },
+      selected: false,
+      dragging: false,
+    };
+  });
+  const updatedGroup = updated.find((node) => node.id === groupId);
+  return updatedGroup ? [updatedGroup, ...updated.filter((node) => node.id !== groupId)] : updated;
+}
+
+function removeNodesFromGroups(nodes: GraphNode[], nodeIds: Iterable<string>) {
+  const requestedIds = new Set(nodeIds);
+  const detachedIds = new Set(nodes.filter((node) => requestedIds.has(node.id) && node.parentId).map((node) => node.id));
+  if (!detachedIds.size) return nodes;
+  const updated = nodes.map((node) => detachedIds.has(node.id)
+    ? { ...detachNodeFromGroup(node, absoluteNodePosition(node, nodes)), selected: true, dragging: false }
+    : node);
+  return updated.map((node) => node.type === "group"
+    ? { ...node, data: { ...node.data, memberCount: updated.filter((member) => member.parentId === node.id).length } }
+    : node);
+}
+
+function groupDropTargetForNode(draggedNode: GraphNode, nodes: GraphNode[]) {
+  if (draggedNode.type === "group" || draggedNode.parentId) return "";
+  const draggedPosition = absoluteNodePosition(draggedNode, nodes);
+  const draggedSize = nodeVisualSize(draggedNode);
+  const draggedArea = Math.max(1, draggedSize.width * draggedSize.height);
+  let best = { id: "", ratio: 0 };
+  for (const group of nodes.filter((node) => node.type === "group")) {
+    const groupPosition = absoluteNodePosition(group, nodes);
+    const groupSize = nodeVisualSize(group);
+    const overlapWidth = Math.max(0, Math.min(draggedPosition.x + draggedSize.width, groupPosition.x + groupSize.width) - Math.max(draggedPosition.x, groupPosition.x));
+    const overlapHeight = Math.max(0, Math.min(draggedPosition.y + draggedSize.height, groupPosition.y + groupSize.height) - Math.max(draggedPosition.y, groupPosition.y));
+    const ratio = (overlapWidth * overlapHeight) / draggedArea;
+    if (ratio >= GROUP_DROP_OVERLAP_RATIO && ratio > best.ratio) best = { id: group.id, ratio };
+  }
+  return best.id;
 }
 
 function clipboardSelectionNodes(nodes: GraphNode[]) {
@@ -1411,6 +1608,13 @@ function cleanNodes(nodes: GraphNode[]) {
     delete data.providerOptions;
     delete data.imageProviderOptions;
     delete data.videoGenerationProviderOptions;
+    delete data.skillRegistry;
+    delete data.skillConnected;
+    delete data.skillInputId;
+    delete data.skillInputLabel;
+    delete data.onRegisterSkill;
+    delete data.onRefreshSkill;
+    delete data.onUnregisterSkill;
     delete data.preview;
     delete data.imageData;
     delete data.videoData;
@@ -1439,6 +1643,13 @@ function projectNodes(nodes: GraphNode[]) {
     delete data.providerOptions;
     delete data.imageProviderOptions;
     delete data.videoGenerationProviderOptions;
+    delete data.skillRegistry;
+    delete data.skillConnected;
+    delete data.skillInputId;
+    delete data.skillInputLabel;
+    delete data.onRegisterSkill;
+    delete data.onRefreshSkill;
+    delete data.onUnregisterSkill;
     delete data.preview;
     return { ...node, data };
   });
@@ -1459,6 +1670,7 @@ const PORTABLE_NODE_TYPES = new Set([
   "group",
   "reference",
   "video",
+  "skill",
   "codex",
   "prompteditor",
   "imagegenerator",
@@ -1517,7 +1729,7 @@ function parsePortableCanvas(value: unknown) {
     if (item.type === "videogenerator" && item.data.videoGenerationProvider !== undefined && item.data.videoGenerationProvider !== "pending" && !isVideoGenerationProvider(item.data.videoGenerationProvider)) {
       throw new Error(`节点「${item.id}」使用了不支持的视频生成供应商`);
     }
-    if (item.type === "codex" && item.data.skillId !== undefined && !PROMPT_SKILLS.includes(item.data.skillId as PromptSkillId)) {
+    if ((item.type === "codex" || item.type === "prompteditor" || item.type === "skill") && item.data.skillId !== undefined && !String(item.data.skillId).startsWith("custom:") && !PROMPT_SKILLS.includes(item.data.skillId as PromptSkillId)) {
       throw new Error(`节点「${item.id}」使用了不支持的提示词 Skill`);
     }
     const mediaField = item.type === "reference" ? "imageData" : item.type === "video" ? "videoData" : "";
@@ -1873,6 +2085,7 @@ function FlowWorkspace() {
     comfly: { configured: false, loading: true, models: [] },
     "seedance-cli": { configured: false, loading: true, models: [] },
   });
+  const [skillRegistry, setSkillRegistry] = useState<SkillRegistryItem[]>(DEFAULT_SKILL_REGISTRY);
   const [tasks, setTasks] = useState<CanvasTask[]>([]);
   const [taskConcurrency, setTaskConcurrency] = useState(2);
   const [taskClock, setTaskClock] = useState(() => Date.now());
@@ -1905,6 +2118,7 @@ function FlowWorkspace() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(storedThemePreference);
   const [lastAddedNodeId, setLastAddedNodeId] = useState("");
   const [altCopyMode, setAltCopyMode] = useState(false);
+  const [groupDropTargetId, setGroupDropTargetId] = useState("");
   const [historyAvailability, setHistoryAvailability] = useState({ canUndo: false, canRedo: false });
   const suppressDirty = useRef(true);
   const providerCatalogsRef = useRef(providerCatalogs);
@@ -1919,6 +2133,7 @@ function FlowWorkspace() {
   const pasteCountRef = useRef(0);
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
   const altDragCopyActiveRef = useRef(false);
+  const groupDropTargetIdRef = useRef("");
   const altDragCopyStateRef = useRef<{
     pairs: { originalId: string; copyId: string; originalPosition: { x: number; y: number } }[];
     previewEdgeIds: string[];
@@ -1933,6 +2148,36 @@ function FlowWorkspace() {
   const libraryRef = useRef<HTMLElement>(null);
   const { fitView, screenToFlowPosition } = useReactFlow();
 
+  const refreshSkillRegistry = useCallback(async () => {
+    const result = await projectApi<{ skills: SkillRegistryItem[] }>("/skills");
+    setSkillRegistry(result.skills?.length ? result.skills : DEFAULT_SKILL_REGISTRY);
+    return result.skills;
+  }, []);
+
+  const registerSkill = useCallback(async (path: string) => {
+    const result = await projectApi<{ skill: SkillRegistryItem }>("/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    await refreshSkillRegistry();
+    setToast(`已注册 Skill：${result.skill.label}`);
+  }, [refreshSkillRegistry]);
+
+  const refreshRegisteredSkill = useCallback(async (skillId: PromptSkillId) => {
+    if (skillId === "none") return;
+    await projectApi(`/skills/${encodeURIComponent(skillId)}`, { method: "POST" });
+    await refreshSkillRegistry();
+    setToast(`已刷新 Skill：${promptSkillLabel(skillId, skillRegistry)}`);
+  }, [refreshSkillRegistry, skillRegistry]);
+
+  const unregisterSkill = useCallback(async (skillId: PromptSkillId) => {
+    await projectApi(`/skills/${encodeURIComponent(skillId)}`, { method: "DELETE" });
+    setNodes((current) => current.map((node) => node.data.skillId === skillId ? { ...node, data: { ...node.data, skillId: "none", threadId: undefined } } : node));
+    await refreshSkillRegistry();
+    setToast("已取消 Skill 注册；本地文件没有被删除");
+  }, [refreshSkillRegistry]);
+
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const syncTheme = () => applyThemePreference(themePreference, media.matches);
@@ -1942,6 +2187,17 @@ function FlowWorkspace() {
     media.addEventListener("change", syncTheme);
     return () => media.removeEventListener("change", syncTheme);
   }, [themePreference]);
+  useEffect(() => {
+    let cancelled = false;
+    projectApi<{ skills: SkillRegistryItem[] }>("/skills")
+      .then((result) => {
+        if (!cancelled) setSkillRegistry(result.skills?.length ? result.skills : DEFAULT_SKILL_REGISTRY);
+      })
+      .catch((error) => {
+        if (!cancelled) setToast(error instanceof Error ? error.message : "无法读取 Skill 列表");
+      });
+    return () => { cancelled = true; };
+  }, []);
   const finishAltDragCopy = useCallback((draggedNode?: GraphNode) => {
     const copyState = altDragCopyStateRef.current;
     if (!copyState) {
@@ -2106,6 +2362,28 @@ function FlowWorkspace() {
 
   const groupSelectedNodes = useCallback(() => {
     const selectedNodes = nodes.filter((node) => node.selected);
+    const selectedGroups = selectedNodes.filter((node) => node.type === "group");
+    if (selectedGroups.length === 1) {
+      const groupId = selectedGroups[0].id;
+      const candidates = selectedNodes.filter((node) => node.type !== "group" && !node.parentId);
+      const foreignMembers = selectedNodes.filter((node) => node.parentId && node.parentId !== groupId);
+      if (foreignMembers.length) {
+        setToast("不能把其他群组的成员直接加入当前群组，请先将它们移出");
+        return;
+      }
+      if (!candidates.length) {
+        setToast("请同时选中一个群组和至少一个未编组节点");
+        return;
+      }
+      setNodes((current) => addNodesToExistingGroup(current, groupId, candidates.map((node) => node.id)));
+      setEdges((current) => current.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+      setToast(`已将 ${candidates.length} 个节点加入「${String(selectedGroups[0].data.title || "群组")}」`);
+      return;
+    }
+    if (selectedGroups.length > 1) {
+      setToast("一次只能向一个现有群组添加节点");
+      return;
+    }
     if (selectedNodes.length < 2) {
       setToast("请先选择至少 2 个节点再编组");
       return;
@@ -2155,6 +2433,16 @@ function FlowWorkspace() {
     setEdges((current) => current.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
     setLastAddedNodeId(groupId);
     setToast(`已将 ${selectedNodes.length} 个节点编为一组，拖动浅色外框可整体移动`);
+  }, [nodes]);
+
+  const removeSelectedGroupMembers = useCallback(() => {
+    const memberIds = nodes.filter((node) => node.selected && node.parentId).map((node) => node.id);
+    if (!memberIds.length) {
+      setToast("请先选中需要移出群组的成员节点");
+      return;
+    }
+    setNodes((current) => removeNodesFromGroups(current, memberIds));
+    setToast(`已将 ${memberIds.length} 个节点移出群组，连线保持不变`);
   }, [nodes]);
 
   const ungroupSelectedNodes = useCallback(() => {
@@ -2209,6 +2497,12 @@ function FlowWorkspace() {
       const target = event.target as HTMLElement | null;
       const canvasContext = !target || target === document.body || Boolean(target.closest(".flow-canvas"));
       if (!canvasContext) return;
+
+      if (modifier && event.shiftKey && key === "g") {
+        event.preventDefault();
+        removeSelectedGroupMembers();
+        return;
+      }
 
       if (modifier && key === "g") {
         event.preventDefault();
@@ -2314,7 +2608,7 @@ function FlowWorkspace() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, [apiKeySettingsOpen, edges, fileManagerOpen, finishAltDragCopy, groupSelectedNodes, mediaSettingsOpen, nodes, projectId, redoCanvas, screenToFlowPosition, undoCanvas, ungroupSelectedNodes]);
+  }, [apiKeySettingsOpen, edges, fileManagerOpen, finishAltDragCopy, groupSelectedNodes, mediaSettingsOpen, nodes, projectId, redoCanvas, removeSelectedGroupMembers, screenToFlowPosition, undoCanvas, ungroupSelectedNodes]);
 
   useGSAP(() => {
     const media = gsap.matchMedia();
@@ -3408,7 +3702,7 @@ function FlowWorkspace() {
       }, {
         kind: "generation",
         projectId,
-        title: `编辑改写 · ${PROMPT_SKILL_LABELS[skillId]} · ${instruction.replace(/\s+/g, " ").slice(0, 18)}`,
+        title: `编辑改写 · ${promptSkillLabel(skillId, skillRegistry)} · ${instruction.replace(/\s+/g, " ").slice(0, 18)}`,
         sourceNodeId: nodeId,
         outputNodeIds,
       });
@@ -3416,7 +3710,7 @@ function FlowWorkspace() {
     } catch (error) {
       setToast(error instanceof Error ? error.message : "任务创建失败");
     }
-  }, [nodes, edges, getMediaSlots, providerCatalogs, tasks, enqueueTask, projectId]);
+  }, [nodes, edges, getMediaSlots, providerCatalogs, tasks, enqueueTask, projectId, skillRegistry]);
 
   const runPromptEditor = useCallback(async (nodeId: string) => {
     const editorNode = nodes.find((node) => node.id === nodeId && node.type === "prompteditor");
@@ -3435,8 +3729,10 @@ function FlowWorkspace() {
     try { selection = runtimeSelection(editorNode.data, providerCatalogs); }
     catch (error) { setToast(error instanceof Error ? error.message : "模型供应商无效"); return; }
     const { provider, catalog, model: selectedModel, reasoningEffort: selectedEffort } = selection;
+    const skillEdge = edges.find((edge) => edge.target === nodeId && edge.targetHandle === "skill");
+    const skillNode = skillEdge ? nodes.find((node) => node.id === skillEdge.source && node.type === "skill") : undefined;
     let skillId: PromptSkillId;
-    try { skillId = normalizePromptSkill(editorNode.data.skillId); }
+    try { skillId = normalizePromptSkill(skillNode?.data.skillId || editorNode.data.skillId); }
     catch (error) { setToast(error instanceof Error ? error.message : "提示词 Skill 无效"); return; }
     if (catalog.loading) { setToast(`${PROVIDER_LABELS[provider]} 模型列表仍在载入，请稍等`); return; }
     if (!catalog.configured) { setToast(catalog.message || `${PROVIDER_LABELS[provider]} 尚未配置`); return; }
@@ -3466,7 +3762,7 @@ function FlowWorkspace() {
       }, {
         kind: "revision",
         projectId,
-        title: `编辑提示词 · ${PROMPT_SKILL_LABELS[skillId]} · ${prompt.replace(/\s+/g, " ").slice(0, 18)}`,
+        title: `编辑提示词 · ${promptSkillLabel(skillId, skillRegistry)} · ${prompt.replace(/\s+/g, " ").slice(0, 18)}`,
         sourceNodeId: nodeId,
         outputNodeIds: [outputNode.id],
       });
@@ -3474,7 +3770,7 @@ function FlowWorkspace() {
     } catch (error) {
       setToast(error instanceof Error ? error.message : "任务创建失败");
     }
-  }, [nodes, edges, providerCatalogs, tasks, enqueueTask, projectId]);
+  }, [nodes, edges, providerCatalogs, tasks, enqueueTask, projectId, skillRegistry]);
 
   const renderNodes = useMemo(() => nodes.map((node) => {
     const activeTask = tasks.find((task) => task.projectId === projectId && (task.sourceNodeId === node.id || task.outputNodeIds.includes(node.id)) && ACTIVE_TASK_STATUSES.has(task.status));
@@ -3495,6 +3791,9 @@ function FlowWorkspace() {
       ? edges.find((edge) => edge.target === node.id && edge.targetHandle === (node.type === "prompteditor" ? "original-prompt" : "prompt"))
       : undefined;
     const promptSource = promptEdge ? nodes.find((source) => source.id === promptEdge.source) : undefined;
+    const skillEdge = node.type === "prompteditor" ? edges.find((edge) => edge.target === node.id && edge.targetHandle === "skill") : undefined;
+    const skillSource = skillEdge ? nodes.find((source) => source.id === skillEdge.source && source.type === "skill") : undefined;
+    const linkedSkillId = skillSource ? normalizePromptSkill(skillSource.data.skillId || "none") : undefined;
     return {
       ...node,
       data: {
@@ -3502,11 +3801,16 @@ function FlowWorkspace() {
         inputSlots: node.type === "codex" || node.type === "videogenerator" ? getMediaSlots(node.id) : node.type === "imagegenerator" ? getImageGenerationSlots(node.id) : undefined,
         promptConnected: node.type === "imagegenerator" || node.type === "videogenerator" || node.type === "prompteditor" ? Boolean(promptEdge) : undefined,
         promptInput: (node.type === "imagegenerator" || node.type === "videogenerator" || node.type === "prompteditor") && promptEdge ? nodeText(promptSource) : undefined,
+        skillConnected: node.type === "prompteditor" ? Boolean(skillEdge) : undefined,
+        skillInputId: linkedSkillId,
+        skillInputLabel: linkedSkillId ? promptSkillLabel(linkedSkillId, skillRegistry) : undefined,
+        skillRegistry: node.type === "skill" || node.type === "prompteditor" ? skillRegistry : undefined,
         providerOptions: node.type === "codex" || node.type === "prompteditor" ? providerOptions : undefined,
         imageProviderOptions: node.type === "imagegenerator" ? imageProviderOptions : undefined,
         videoGenerationProviderOptions: node.type === "videogenerator" ? videoGenerationProviderOptions : undefined,
         assignedMarkers,
         memberCount: node.type === "group" ? nodes.filter((member) => member.parentId === node.id).length : node.data.memberCount,
+        groupDropTarget: node.type === "group" ? node.id === groupDropTargetId : undefined,
         busy: Boolean(activeTask),
         busyLabel: activeTask ? TASK_STAGE_LABELS[activeTask.stage] : undefined,
         onUpdate: (patch: Partial<GraphData>) => updateNode(node.id, patch),
@@ -3514,9 +3818,12 @@ function FlowWorkspace() {
         onRun: node.type === "codex" ? () => void runCodex(node.id) : node.type === "prompteditor" ? () => void runPromptEditor(node.id) : node.type === "imagegenerator" ? () => void runImageGeneration(node.id) : node.type === "videogenerator" ? () => void runVideoGeneration(node.id) : undefined,
         onCopy: isOutputNodeType(node.type) || node.type === "prompteditor" ? () => void copyNodeText(node.id) : undefined,
         onPaste: node.type === "text" ? () => void pasteNodeText(node.id) : node.type === "reference" ? () => void pasteNodeImage(node.id) : undefined,
+        onRegisterSkill: node.type === "skill" ? registerSkill : undefined,
+        onRefreshSkill: node.type === "skill" ? refreshRegisteredSkill : undefined,
+        onUnregisterSkill: node.type === "skill" ? unregisterSkill : undefined,
       },
     };
-  }), [nodes, edges, tasks, getMediaSlots, getImageGenerationSlots, providerOptions, imageProviderOptions, videoGenerationProviderOptions, updateNode, deleteNode, runCodex, runPromptEditor, runImageGeneration, runVideoGeneration, copyNodeText, pasteNodeText, pasteNodeImage, projectId]);
+  }), [nodes, edges, tasks, getMediaSlots, getImageGenerationSlots, providerOptions, imageProviderOptions, videoGenerationProviderOptions, skillRegistry, groupDropTargetId, updateNode, deleteNode, runCodex, runPromptEditor, runImageGeneration, runVideoGeneration, copyNodeText, pasteNodeText, pasteNodeImage, registerSkill, refreshRegisteredSkill, unregisterSkill, projectId]);
 
   const sortedTasks = useMemo(() => [...tasks].sort((a, b) => {
     const activeDifference = Number(ACTIVE_TASK_STATUSES.has(b.status)) - Number(ACTIVE_TASK_STATUSES.has(a.status));
@@ -3589,6 +3896,8 @@ function FlowWorkspace() {
   const onNodesChange = useCallback((changes: NodeChange<GraphNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)), []);
   const onNodeDragStart = useCallback((event: MouseEvent | TouchEvent, draggedNode: GraphNode) => {
+    groupDropTargetIdRef.current = "";
+    setGroupDropTargetId("");
     const altPressed = "altKey" in event && event.altKey;
     if ((!altPressed && !altCopyMode) || altDragCopyActiveRef.current) return;
     const initialSourceNodes = draggedNode.selected ? nodes.filter((node) => node.selected) : [draggedNode];
@@ -3634,9 +3943,31 @@ function FlowWorkspace() {
     ]);
     setToast("正在拖动新副本，原节点和连线会保持原位");
   }, [altCopyMode, edges, nodes]);
+  const onNodeDrag = useCallback((_event: MouseEvent | TouchEvent, draggedNode: GraphNode) => {
+    const nextTargetId = altDragCopyActiveRef.current ? "" : groupDropTargetForNode(draggedNode, nodes);
+    if (nextTargetId === groupDropTargetIdRef.current) return;
+    groupDropTargetIdRef.current = nextTargetId;
+    setGroupDropTargetId(nextTargetId);
+  }, [nodes]);
   const onNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, draggedNode: GraphNode) => {
+    const wasAltCopy = altDragCopyActiveRef.current;
+    const targetGroupId = groupDropTargetIdRef.current;
+    groupDropTargetIdRef.current = "";
+    setGroupDropTargetId("");
     finishAltDragCopy(draggedNode);
-  }, [finishAltDragCopy]);
+    if (wasAltCopy || !targetGroupId || draggedNode.type === "group" || draggedNode.parentId) return;
+    setNodes((current) => {
+      const withFinalPosition = current.map((node) => node.id === draggedNode.id
+        ? { ...node, position: { ...draggedNode.position }, dragging: false }
+        : node);
+      const incomingIds = draggedNode.selected
+        ? withFinalPosition.filter((node) => node.selected && node.type !== "group" && !node.parentId).map((node) => node.id)
+        : [draggedNode.id];
+      return addNodesToExistingGroup(withFinalPosition, targetGroupId, incomingIds);
+    });
+    const groupTitle = String(nodes.find((node) => node.id === targetGroupId)?.data.title || "群组");
+    setToast(`已加入「${groupTitle}」，连线保持不变`);
+  }, [finishAltDragCopy, nodes]);
   const onEdgeContextMenu = useCallback((event: ReactMouseEvent, edge: Edge) => {
     event.preventDefault();
     setEdges((current) => current.filter((item) => item.id !== edge.id));
@@ -3676,6 +4007,9 @@ function FlowWorkspace() {
     if ((source.type === "text" || source.type === "textinput" || isOutputNodeType(source.type)) && target.type === "prompteditor") {
       return connection.targetHandle === "original-prompt";
     }
+    if (source.type === "skill" && target.type === "prompteditor") {
+      return connection.targetHandle === "skill";
+    }
     if (source.type === "imagegenerator" && isImageOutputNodeType(target.type)) return true;
     if (source.type === "videogenerator" && isVideoOutputNodeType(target.type)) return true;
     if (source.type === "text" && target.type === "text") return true;
@@ -3698,7 +4032,9 @@ function FlowWorkspace() {
     if (isVideoOutputNodeType(targetType) && sourceNode?.type === "videogenerator" && sourceNode.data.generatedVideos?.length) {
       updateNode(connection.target, { generatedVideos: sourceNode.data.generatedVideos, generationMeta: sourceNode.data.generationMeta, videoGenerationError: sourceNode.data.videoGenerationError });
     }
-    setToast(connection.targetHandle === "prompt" || connection.targetHandle === "original-prompt"
+    setToast(connection.targetHandle === "skill"
+      ? "Skill 已接入，将覆盖编辑提示词节点内的旧配置"
+      : connection.targetHandle === "prompt" || connection.targetHandle === "original-prompt"
       ? connection.targetHandle === "original-prompt" ? "原提示词已接入，编辑区已锁定并会跟随上游文本" : "提示词输入已连接，节点内编辑已锁定"
       : connection.targetHandle?.startsWith("media-")
         ? targetType === "imagegenerator" ? "参考图片已连接并自动编号" : "参考素材已连接，图片与视频会分别自动编号并用于 @ 引用"
@@ -3752,6 +4088,8 @@ function FlowWorkspace() {
       };
     } else if (kind === "prompteditor") {
       node = { id, type: "prompteditor", position, data: { kind: "promptEditor", title: "编辑提示词", provider: "codex", skillId: "seedance", instruction: "", prompt: "" } };
+    } else if (kind === "skill") {
+      node = { id, type: "skill", position, data: { kind: "skill", title: "Skill", skillId: "none" } };
     } else {
       node = { id, type: "text", position, data: { kind: "textBox", title: "文本框", text: "", prompt: "", source: "可编辑文本" } };
     }
@@ -4108,7 +4446,7 @@ function FlowWorkspace() {
       if (node.type === "group" || node.parentId) return node;
       const depth = getDepth(node.id);
       const y = columnY.get(depth) || 110;
-      const height = node.type === "videogenerator" ? 1080 : node.type === "imagegenerator" ? 820 : node.type === "video" ? 520 : node.type === "reference" ? 460 : node.type === "codex" ? 700 : node.type === "prompteditor" ? 520 : isOutputNodeType(node.type) ? 430 : 270;
+      const height = node.type === "videogenerator" ? 1080 : node.type === "imagegenerator" ? 820 : node.type === "video" ? 520 : node.type === "reference" ? 460 : node.type === "codex" ? 700 : node.type === "prompteditor" ? 520 : node.type === "skill" ? 460 : isOutputNodeType(node.type) ? 430 : 270;
       columnY.set(depth, y + height);
       const position = { x: 80 + depth * 500, y };
       return { ...node, position };
@@ -4307,6 +4645,7 @@ function FlowWorkspace() {
             <button className="palette-card palette-reference" onClick={() => addCanvasNode("reference")}><span className="palette-glyph">图</span><span className="palette-copy"><b>图片</b><small>上传、预览或接收生成图片</small></span><i>＋</i></button>
             <button className="palette-card palette-video" onClick={() => addCanvasNode("video")}><span className="palette-glyph">视</span><span className="palette-copy"><b>视频</b><small>上传、播放或接收生成视频</small></span><i>＋</i></button>
             <button className="palette-card palette-output" onClick={() => addCanvasNode("text")}><span className="palette-glyph">文</span><span className="palette-copy"><b>文本框</b><small>左右连线，支持复制与粘贴</small></span><i>＋</i></button>
+            <button className="palette-card palette-skill" onClick={() => addCanvasNode("skill")}><span className="palette-glyph">技</span><span className="palette-copy"><b>Skill</b><small>管理并接入提示词编辑技能</small></span><i>＋</i></button>
             <button className="palette-card palette-rewrite" onClick={() => addCanvasNode("codex")}><span className="palette-glyph">改</span><span className="palette-copy"><b>编辑改写</b><small>选择 Agent 与提示词 Skill</small></span><i>＋</i></button>
             <button className="palette-card palette-image-generator" onClick={() => addCanvasNode("imagegenerator")}><span className="palette-glyph">生</span><span className="palette-copy"><b>图片生成</b><small>12 图参考与可连接提示词</small></span><i>＋</i></button>
             <button className="palette-card palette-video-generator" onClick={() => addCanvasNode("videogenerator")}><span className="palette-glyph">影</span><span className="palette-copy"><b>视频生成</b><small>三路供应商与 12 位全能参考</small></span><i>＋</i></button>
@@ -4334,6 +4673,7 @@ function FlowWorkspace() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeDragStart={onNodeDragStart}
+            onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
             onConnect={onConnect}
             onEdgeContextMenu={onEdgeContextMenu}
@@ -4342,8 +4682,8 @@ function FlowWorkspace() {
             connectionLineStyle={{ stroke: "var(--edge-color)", strokeWidth: 2.1 }}
             fitView
             fitViewOptions={{ padding: 0.12 }}
-            minZoom={0.35}
-            maxZoom={1.5}
+            minZoom={CANVAS_MIN_ZOOM}
+            maxZoom={CANVAS_MAX_ZOOM}
             deleteKeyCode={null}
             multiSelectionKeyCode="Shift"
             defaultEdgeOptions={{ type: "disconnectable", interactionWidth: 24, style: { stroke: "var(--edge-color)", strokeWidth: 2.1 } }}
@@ -4352,7 +4692,7 @@ function FlowWorkspace() {
             <Background variant={BackgroundVariant.Dots} gap={20} size={1.1} color="var(--canvas-dot)" />
             <Controls position="bottom-right" showInteractive={false} />
           </ReactFlow>
-          <div className="canvas-shortcuts-hint" aria-hidden="true"><kbd>Alt</kbd> 拖动复制 <span>·</span> <kbd>Ctrl G</kbd> 编组 <span>·</span> <kbd>Ctrl ⌫</kbd> 解组 <span>·</span> <kbd>Ctrl</kbd> C / V <span>·</span> <kbd>Ctrl</kbd> Z 撤销 <span>·</span> <kbd>Delete</kbd> 删除</div>
+          <div className="canvas-shortcuts-hint" aria-hidden="true"><kbd>Alt</kbd> 拖动复制 <span>·</span> <kbd>Ctrl G</kbd> 编组 / 加入 <span>·</span> <kbd>Ctrl ⇧ G</kbd> 移出 <span>·</span> <kbd>Ctrl ⌫</kbd> 解组 <span>·</span> <kbd>Ctrl</kbd> Z 撤销 <span>·</span> <kbd>Delete</kbd> 删除</div>
           <div className="flow-toast"><i className={bridgeState} />{toast}</div>
         </section>
         <aside className={`task-center ${taskPanelOpen ? "is-open" : "is-closed"}`} aria-label="任务中心">
@@ -4376,7 +4716,7 @@ function FlowWorkspace() {
                 catch { /* Unknown providers remain visible but never masquerade as Codex. */ }
               }
               const taskModel = agentTaskProvider ? providerCatalogs[agentTaskProvider].models.find((model) => model.model === task.model) : undefined;
-              const taskCategory = task.kind === "image-generation" ? "图片生成" : task.kind === "video-generation" ? "视频生成" : PROMPT_SKILL_LABELS[normalizePromptSkill(task.skillId)];
+              const taskCategory = task.kind === "image-generation" ? "图片生成" : task.kind === "video-generation" ? "视频生成" : promptSkillLabel(normalizePromptSkill(task.skillId), skillRegistry);
               const taskMetaText = [taskCategory, taskProviderLabel(task), taskModel?.displayName || task.model || "默认模型", promptTask ? REASONING_LABELS[task.reasoningEffort || ""] || task.reasoningEffort || "默认思考" : null].filter(Boolean).join(" · ");
               return (
                 <article className={`task-card status-${task.status}`} key={task.id}>

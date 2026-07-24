@@ -9,6 +9,7 @@ const NODE_TYPE_ALIASES = new Map([
   ["image", "reference"],
   ["reference", "reference"],
   ["video", "video"],
+  ["skill", "skill"],
   ["text", "text"],
   ["text_box", "text"],
   ["textbox", "text"],
@@ -29,6 +30,7 @@ const PERSISTED_NODE_TYPES = new Set([
   "group",
   "reference",
   "video",
+  "skill",
   "codex",
   "prompteditor",
   "imagegenerator",
@@ -64,6 +66,13 @@ const RUNTIME_DATA_KEYS = new Set([
   "inputSlots",
   "promptConnected",
   "promptInput",
+  "skillConnected",
+  "skillInputId",
+  "skillInputLabel",
+  "skillRegistry",
+  "onRegisterSkill",
+  "onRefreshSkill",
+  "onUnregisterSkill",
   "assignedMarkers",
   "modelOptions",
   "providerOptions",
@@ -104,6 +113,7 @@ function canonicalNodeType(value) {
 function dataDefaults(type) {
   if (type === "reference" || type === "imageoutput") return { kind: "reference", title: "图片" };
   if (type === "video" || type === "videooutput") return { kind: "video", title: "视频" };
+  if (type === "skill") return { kind: "skill", title: "Skill", skillId: "none" };
   if (TEXT_NODE_TYPES.has(type)) return { kind: "textBox", title: "文本框", text: "", prompt: "", source: "可编辑文本" };
   if (type === "codex") {
     return {
@@ -295,6 +305,9 @@ export function validateCanvasConnection(nodes, edges, connection) {
   if (TEXT_NODE_TYPES.has(source.type) && target.type === "prompteditor") {
     return connection.targetHandle === "original-prompt" ? { valid: true } : { valid: false, reason: "原提示词必须连接到 original-prompt 端口" };
   }
+  if (source.type === "skill" && target.type === "prompteditor") {
+    return connection.targetHandle === "skill" ? { valid: true } : { valid: false, reason: "Skill 必须连接到 skill 端口" };
+  }
   if (source.type === "imagegenerator" && IMAGE_OUTPUT_TYPES.has(target.type)) return { valid: true };
   if (source.type === "videogenerator" && VIDEO_OUTPUT_TYPES.has(target.type)) return { valid: true };
   if (source.type === "text" && target.type === "text") return { valid: true };
@@ -352,10 +365,14 @@ export function validateCanvasProject(project) {
 
 function nodeVisualSize(node) {
   const width = Number(node.width || node.style?.width || (PROCESSOR_TYPES.has(node.type) ? PROCESSOR_NODE_WIDTH : 360));
-  const defaultHeight = node.type === "videogenerator" ? 1080 : node.type === "imagegenerator" ? 820 : node.type === "video" ? 520 : node.type === "reference" ? 460 : node.type === "codex" ? 700 : node.type === "prompteditor" ? 520 : 300;
+  const defaultHeight = node.type === "videogenerator" ? 1080 : node.type === "imagegenerator" ? 820 : node.type === "video" ? 520 : node.type === "reference" ? 460 : node.type === "codex" ? 700 : node.type === "prompteditor" ? 520 : node.type === "skill" ? 460 : 300;
   const height = Number(node.height || node.style?.height || defaultHeight);
   return { width: Number.isFinite(width) ? width : 360, height: Number.isFinite(height) ? height : defaultHeight };
 }
+
+const GROUP_PADDING_X = 34;
+const GROUP_PADDING_TOP = 70;
+const GROUP_PADDING_BOTTOM = 34;
 
 function groupNodes(project, operation, nodeIds, changes) {
   const ids = [...new Set((operation.nodeIds || []).map(String))];
@@ -388,6 +405,99 @@ function groupNodes(project, operation, nodeIds, changes) {
     position: { x: node.position.x - groupPosition.x, y: node.position.y - groupPosition.y },
   } : node)];
   changes.createdNodeIds.push(groupId);
+}
+
+function addNodesToGroup(project, operation, changes) {
+  const groupId = nonEmptyString(operation.groupId || operation.id, "群组 ID");
+  const group = project.nodes.find((node) => node.id === groupId && node.type === "group");
+  if (!group) throw new Error(`没有找到群组：${groupId}`);
+  const ids = [...new Set((operation.nodeIds || []).map(String))];
+  if (!ids.length) throw new Error("至少需要一个待加入群组的节点");
+  const members = ids.map((id) => project.nodes.find((node) => node.id === id));
+  if (members.some((node) => !node)) throw new Error("待加入群组的节点不存在");
+  if (members.some((node) => node.type === "group")) throw new Error("暂不支持嵌套群组");
+  if (members.some((node) => node.parentId)) throw new Error("待加入节点已经属于群组，请先移出原群组");
+
+  const groupSize = nodeVisualSize(group);
+  const bounds = members.map((node) => ({ node, ...nodeVisualSize(node) }));
+  const nextPosition = {
+    x: Math.min(group.position.x, ...bounds.map(({ node }) => node.position.x - GROUP_PADDING_X)),
+    y: Math.min(group.position.y, ...bounds.map(({ node }) => node.position.y - GROUP_PADDING_TOP)),
+  };
+  const nextRight = Math.max(
+    group.position.x + groupSize.width,
+    ...bounds.map(({ node, width }) => node.position.x + width + GROUP_PADDING_X),
+  );
+  const nextBottom = Math.max(
+    group.position.y + groupSize.height,
+    ...bounds.map(({ node, height }) => node.position.y + height + GROUP_PADDING_BOTTOM),
+  );
+  const shift = { x: group.position.x - nextPosition.x, y: group.position.y - nextPosition.y };
+  const memberSet = new Set(ids);
+  const currentMemberCount = project.nodes.filter((node) => node.parentId === groupId).length;
+  project.nodes = project.nodes.map((node) => {
+    if (node.id === groupId) {
+      return {
+        ...node,
+        position: nextPosition,
+        style: {
+          ...node.style,
+          width: Math.max(180, nextRight - nextPosition.x),
+          height: Math.max(140, nextBottom - nextPosition.y),
+        },
+        data: { ...node.data, memberCount: currentMemberCount + members.length },
+      };
+    }
+    if (node.parentId === groupId) {
+      return {
+        ...node,
+        position: { x: node.position.x + shift.x, y: node.position.y + shift.y },
+      };
+    }
+    if (!memberSet.has(node.id)) return node;
+    return {
+      ...node,
+      parentId: groupId,
+      extent: "parent",
+      expandParent: true,
+      position: { x: node.position.x - nextPosition.x, y: node.position.y - nextPosition.y },
+    };
+  });
+  const updatedGroup = project.nodes.find((node) => node.id === groupId);
+  if (updatedGroup) project.nodes = [updatedGroup, ...project.nodes.filter((node) => node.id !== groupId)];
+  changes.updatedNodeIds.push(groupId, ...project.nodes.filter((node) => node.parentId === groupId).map((node) => node.id));
+}
+
+function removeNodesFromGroup(project, operation, changes) {
+  const ids = [...new Set((operation.nodeIds || []).map(String))];
+  if (!ids.length) throw new Error("至少需要一个待移出群组的节点");
+  const requestedGroupId = operation.groupId ? nonEmptyString(operation.groupId, "群组 ID") : "";
+  const members = ids.map((id) => project.nodes.find((node) => node.id === id));
+  if (members.some((node) => !node)) throw new Error("待移出群组的节点不存在");
+  if (members.some((node) => !node.parentId)) throw new Error("待移出节点不属于任何群组");
+  if (requestedGroupId && members.some((node) => node.parentId !== requestedGroupId)) {
+    throw new Error("待移出节点不属于指定群组");
+  }
+  const groups = new Map(project.nodes.filter((node) => node.type === "group").map((node) => [node.id, node]));
+  const memberSet = new Set(ids);
+  const affectedGroupIds = new Set(members.map((node) => node.parentId));
+  project.nodes = project.nodes.map((node) => {
+    if (!memberSet.has(node.id)) return node;
+    const group = groups.get(node.parentId);
+    if (!group) throw new Error(`节点 ${node.id} 引用了无效群组`);
+    const detached = {
+      ...node,
+      position: { x: group.position.x + node.position.x, y: group.position.y + node.position.y },
+    };
+    delete detached.parentId;
+    delete detached.extent;
+    delete detached.expandParent;
+    return detached;
+  });
+  project.nodes = project.nodes.map((node) => affectedGroupIds.has(node.id)
+    ? { ...node, data: { ...node.data, memberCount: project.nodes.filter((member) => member.parentId === node.id).length } }
+    : node);
+  changes.updatedNodeIds.push(...affectedGroupIds, ...ids);
 }
 
 function ungroupNodes(project, operation, changes) {
@@ -510,6 +620,10 @@ export function applyCanvasOperations(inputProject, operations, options = {}) {
       project.name = nonEmptyString(operation.name, "画布名称").replace(/[\u0000-\u001f]/g, " ").slice(0, 60);
     } else if (op === "group") {
       groupNodes(project, operation, nodeIds, changes);
+    } else if (op === "add_to_group") {
+      addNodesToGroup(project, operation, changes);
+    } else if (op === "remove_from_group") {
+      removeNodesFromGroup(project, operation, changes);
     } else if (op === "ungroup") {
       ungroupNodes(project, operation, changes);
     } else if (op === "layout") {
@@ -753,7 +867,9 @@ export function buildNodeTaskRequest(inputProject, nodeId, overrides = {}) {
     const outputs = outputIds(project, nodeId, TEXT_OUTPUT_TYPES);
     if (!outputs.length) throw new Error("编辑提示词节点必须连接到文本框");
     const provider = String(data.provider || "codex");
-    const skillId = String(data.skillId || "seedance");
+    const skillEdge = project.edges.find((edge) => edge.target === nodeId && edge.targetHandle === "skill");
+    const skillNode = skillEdge ? project.nodes.find((item) => item.id === skillEdge.source && item.type === "skill") : null;
+    const skillId = String(skillNode?.data?.skillId || data.skillId || "seedance");
     return {
       payload: {
         taskMode: "revision",
@@ -850,8 +966,8 @@ export function automationCapabilities() {
   return {
     schemaVersion: CANVAS_SCHEMA_VERSION,
     presets: ["prompt", "image-generation", "video-generation"],
-    nodeTypes: ["image", "video", "text", "prompt", "prompt_editor", "image_generator", "video_generator", "group"],
-    operations: ["add_node", "update_node", "delete_nodes", "connect", "disconnect", "apply_preset", "rename_project", "group", "ungroup", "layout"],
+    nodeTypes: ["image", "video", "text", "skill", "prompt", "prompt_editor", "image_generator", "video_generator", "group"],
+    operations: ["add_node", "update_node", "delete_nodes", "connect", "disconnect", "apply_preset", "rename_project", "group", "add_to_group", "remove_from_group", "ungroup", "layout"],
     executableNodeTypes: ["codex", "prompteditor", "imagegenerator", "videogenerator"],
     limits: { nodes: MAX_CANVAS_NODES, edges: MAX_CANVAS_EDGES, referencesPerGenerator: MAX_MEDIA_REFERENCES },
   };

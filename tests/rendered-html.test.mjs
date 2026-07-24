@@ -75,7 +75,13 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /handleClassName="group-resize-handle"/);
   assert.match(flowSource, /lineClassName="group-resize-line"/);
   assert.match(flowSource, /const groupSelectedNodes = useCallback/);
+  assert.match(flowSource, /function addNodesToExistingGroup/);
+  assert.match(flowSource, /function removeNodesFromGroups/);
+  assert.match(flowSource, /function groupDropTargetForNode/);
+  assert.match(flowSource, /GROUP_DROP_OVERLAP_RATIO = 0\.4/);
+  assert.match(flowSource, /const removeSelectedGroupMembers = useCallback/);
   assert.match(flowSource, /const ungroupSelectedNodes = useCallback/);
+  assert.match(flowSource, /modifier && event\.shiftKey && key === "g"/);
   assert.match(flowSource, /modifier && key === "g"/);
   assert.match(flowSource, /modifier && event\.key === "Backspace"/);
   assert.match(flowSource, /parentId: groupId/);
@@ -89,7 +95,11 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(flowSource, /function blockMiddleMouseDownload/);
   assert.match(flowSource, /onMouseDown=\{blockMiddleMouseDownload\} onAuxClick=\{blockMiddleMouseDownload\}/);
   assert.match(flowSource, /const onNodeDragStart = useCallback/);
+  assert.match(flowSource, /const onNodeDrag = useCallback/);
+  assert.match(flowSource, /onNodeDrag=\{onNodeDrag\}/);
   assert.match(flowSource, /multiSelectionKeyCode="Shift"/);
+  assert.match(flowSource, /const CANVAS_MIN_ZOOM = 0\.06/);
+  assert.match(flowSource, /minZoom=\{CANVAS_MIN_ZOOM\}/);
   assert.match(flowSource, /className="canvas-shortcuts-hint"/);
   assert.match(flowSource, /const REWRITE_NODE_TITLE = "编辑改写"/);
   assert.match(flowSource, /type PromptSkillId = "none" \| "seedance" \| "nanobanana" \| "image" \| "photoreal"/);
@@ -341,6 +351,7 @@ test("server-renders the prompt canvas shell", async () => {
   assert.match(styles, /\.preset-card:hover/);
   assert.match(styles, /\.canvas-group-frame/);
   assert.match(styles, /\.canvas-group-frame\.is-selected/);
+  assert.match(styles, /\.canvas-group-frame\.is-drop-target/);
   assert.match(styles, /\.group-resize-handle/);
   assert.match(styles, /\.group-title-input/);
   assert.match(styles, /\.group-rename-button/);

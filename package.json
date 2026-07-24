@@ -12,7 +12,7 @@
     "canvas": "node scripts/agent-canvas-cli.mjs",
     "build": "node scripts/run-vinext.mjs build",
     "start": "node scripts/run-vinext.mjs start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/openrouter-provider.test.mjs tests/comfly-llm-provider.test.mjs tests/grok-build-provider.test.mjs tests/antigravity-provider.test.mjs tests/image-generation-provider.test.mjs tests/video-generation-provider.test.mjs tests/media-output-store.test.mjs tests/api-key-store.test.mjs tests/canvas-domain.test.mjs tests/canvas-project-store.test.mjs tests/canvas-sync-policy.test.mjs tests/agent-canvas-mcp.test.mjs",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/openrouter-provider.test.mjs tests/comfly-llm-provider.test.mjs tests/grok-build-provider.test.mjs tests/antigravity-provider.test.mjs tests/image-generation-provider.test.mjs tests/video-generation-provider.test.mjs tests/media-output-store.test.mjs tests/api-key-store.test.mjs tests/skill-registry-store.test.mjs tests/canvas-domain.test.mjs tests/canvas-project-store.test.mjs tests/canvas-sync-policy.test.mjs tests/agent-canvas-mcp.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

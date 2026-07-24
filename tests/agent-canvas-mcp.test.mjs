@@ -18,6 +18,10 @@ test("Agent Canvas MCP initializes and exposes semantic tools", async (t) => {
   assert.deepEqual(tools.map((tool) => tool.name), [
     "canvas_health",
     "canvas_list_projects",
+    "canvas_list_skills",
+    "canvas_register_skill",
+    "canvas_refresh_skill",
+    "canvas_unregister_skill",
     "canvas_inspect",
     "canvas_create",
     "canvas_apply_workflow",
@@ -28,5 +32,10 @@ test("Agent Canvas MCP initializes and exposes semantic tools", async (t) => {
     "canvas_get_outputs",
   ]);
   assert.equal(tools.find((tool) => tool.name === "canvas_run").annotations.openWorldHint, true);
-  assert.equal(tools.find((tool) => tool.name === "canvas_apply_workflow").annotations.destructiveHint, true);
+  const applyWorkflow = tools.find((tool) => tool.name === "canvas_apply_workflow");
+  assert.equal(applyWorkflow.annotations.destructiveHint, true);
+  const operations = applyWorkflow.inputSchema.properties.operations.items.properties.op.enum;
+  assert.ok(operations.includes("add_to_group"));
+  assert.ok(operations.includes("remove_from_group"));
+  assert.ok(applyWorkflow.inputSchema.properties.operations.items.properties.nodeType.enum.includes("skill"));
 });

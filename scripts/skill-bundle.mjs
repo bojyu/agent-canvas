@@ -30,6 +30,7 @@ const IMAGE_PROMPT_REFERENCE_FILES = Object.freeze([
 
 export const PROMPT_SKILL_IDS = Object.freeze(["none", "seedance", "nanobanana", "image", "photoreal"]);
 export const LOADABLE_PROMPT_SKILL_IDS = Object.freeze(PROMPT_SKILL_IDS.filter((id) => id !== "none"));
+const customPromptSkillDefinitions = new Map();
 
 export const PROMPT_SKILL_DEFINITIONS = Object.freeze({
   none: Object.freeze({
@@ -116,12 +117,33 @@ export const PROMPT_SKILL_DEFINITIONS = Object.freeze({
 
 export function normalizePromptSkillId(value) {
   const id = String(value || "seedance").trim().toLowerCase();
-  if (!PROMPT_SKILL_IDS.includes(id)) throw new Error(`不支持的提示词 Skill：${id}`);
+  if (!PROMPT_SKILL_IDS.includes(id) && !customPromptSkillDefinitions.has(id)) throw new Error(`不支持的提示词 Skill：${id}`);
   return id;
 }
 
 export function promptSkillDefinition(value) {
-  return PROMPT_SKILL_DEFINITIONS[normalizePromptSkillId(value)];
+  const id = normalizePromptSkillId(value);
+  return PROMPT_SKILL_DEFINITIONS[id] || customPromptSkillDefinitions.get(id);
+}
+
+export function setCustomPromptSkillDefinitions(entries = []) {
+  customPromptSkillDefinitions.clear();
+  for (const entry of entries) {
+    if (!String(entry?.id || "").startsWith("custom:")) continue;
+    customPromptSkillDefinitions.set(entry.id, Object.freeze({
+      id: entry.id,
+      label: String(entry.label || entry.name || entry.id),
+      taskLabel: String(entry.taskLabel || entry.name || "自定义提示词"),
+      referenceFiles: Object.freeze([...(entry.referenceFiles || [])]),
+      preloadedReferenceFiles: Object.freeze([...(entry.preloadedReferenceFiles || [])]),
+      safetyInstruction: String(entry.safetyInstruction || "只使用此 Skill 完成提示词任务。"),
+      custom: true,
+    }));
+  }
+}
+
+export function allPromptSkillIds() {
+  return [...PROMPT_SKILL_IDS, ...customPromptSkillDefinitions.keys()];
 }
 
 export function isImagePromptSkillId(value) {
@@ -203,7 +225,7 @@ export async function materializeIsolatedPromptSkillBundle(bundle) {
   const definition = promptSkillDefinition(bundle?.id);
   const workspacePath = await mkdtemp(join(tmpdir(), "prompt-flow-grok-build-"));
   const skillsPath = join(workspacePath, ".grok", "skills");
-  const isolatedRoot = join(skillsPath, definition.id);
+  const isolatedRoot = join(skillsPath, definition.id.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-"));
   try {
     for (const document of bundle.documents) {
       const destination = join(isolatedRoot, ...document.name.split("/"));

@@ -100,6 +100,53 @@ function toolDefinitions() {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     {
+      name: "canvas_list_skills",
+      title: "List Agent Canvas Skills",
+      description: "List built-in and registered local prompt Skills, including readiness, adapter, and removable status.",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string", description: "Optional name, description, ID, or path filter." } },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: "canvas_register_skill",
+      title: "Register Local Skill",
+      description: "Register a local Skill directory or SKILL.md with Agent Canvas after validating its safe text-file boundary. Does not copy or modify the source files.",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string", description: "Absolute local path to a Skill directory or SKILL.md." } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: "canvas_refresh_skill",
+      title: "Refresh Registered Skill",
+      description: "Revalidate and refresh one registered custom Skill from its existing local path.",
+      inputSchema: {
+        type: "object",
+        properties: { skillId: { type: "string" } },
+        required: ["skillId"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: "canvas_unregister_skill",
+      title: "Unregister Local Skill",
+      description: "Unregister one custom Skill from Agent Canvas. Never deletes source files and refuses built-ins or Skills still used by saved canvases.",
+      inputSchema: {
+        type: "object",
+        properties: { skillId: { type: "string" } },
+        required: ["skillId"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    {
       name: "canvas_inspect",
       title: "Inspect Agent Canvas",
       description: "Inspect one canvas as a compact semantic graph. Base64 media and API keys are never returned.",
@@ -130,7 +177,7 @@ function toolDefinitions() {
     {
       name: "canvas_apply_workflow",
       title: "Apply Agent Canvas Workflow",
-      description: "Atomically add, update, delete, connect, group, lay out, or preset canvas nodes. Use dryRun first and pass the inspected expectedRevision to prevent overwrites.",
+      description: "Atomically add, update, delete, connect, group, change group membership, lay out, or preset canvas nodes. Use dryRun first and pass the inspected expectedRevision to prevent overwrites.",
       inputSchema: {
         type: "object",
         properties: {
@@ -144,13 +191,13 @@ function toolDefinitions() {
             items: {
               type: "object",
               properties: {
-                op: { type: "string", enum: ["add_node", "update_node", "delete_nodes", "connect", "disconnect", "apply_preset", "rename_project", "group", "ungroup", "layout"] },
+                op: { type: "string", enum: ["add_node", "update_node", "delete_nodes", "connect", "disconnect", "apply_preset", "rename_project", "group", "add_to_group", "remove_from_group", "ungroup", "layout"] },
                 id: { type: "string" },
                 nodeId: { type: "string" },
                 nodeIds: { type: "array", items: { type: "string" } },
                 edgeId: { type: "string" },
                 edgeIds: { type: "array", items: { type: "string" } },
-                nodeType: { type: "string", enum: ["image", "video", "text", "prompt", "prompt_editor", "image_generator", "video_generator", "group"] },
+                nodeType: { type: "string", enum: ["image", "video", "text", "skill", "prompt", "prompt_editor", "image_generator", "video_generator", "group"] },
                 source: { type: "string" },
                 target: { type: "string" },
                 sourceHandle: { type: "string" },
@@ -268,6 +315,28 @@ async function callTool(name, args) {
       ? result.projects.map((item) => `${item.id} r${item.revision || 1} — ${item.name}`).join("\n")
       : "No saved Agent Canvas projects.";
     return toolResult(summary, result);
+  }
+  if (name === "canvas_list_skills") {
+    const query = String(args?.query || "").trim();
+    const result = await request(`/skills${query ? `?q=${encode(query)}` : ""}`);
+    const summary = result.skills?.length
+      ? result.skills.map((item) => `${item.ready ? "ready" : "missing"} ${item.id} — ${item.label}${item.builtin ? " (built-in)" : ""}`).join("\n")
+      : "No matching Agent Canvas Skills.";
+    return toolResult(summary, result);
+  }
+  if (name === "canvas_register_skill") {
+    const result = await request("/skills", { method: "POST", body: { path: requiredString(args, "path") } });
+    return toolResult(`Registered ${result.skill.label} as ${result.skill.id}. Source files were not modified.`, result);
+  }
+  if (name === "canvas_refresh_skill") {
+    const skillId = requiredString(args, "skillId");
+    const result = await request(`/skills/${encode(skillId)}`, { method: "POST" });
+    return toolResult(`Refreshed ${result.skill.label} (${result.skill.id}).`, result);
+  }
+  if (name === "canvas_unregister_skill") {
+    const skillId = requiredString(args, "skillId");
+    const result = await request(`/skills/${encode(skillId)}`, { method: "DELETE" });
+    return toolResult(`Unregistered ${skillId}. Source files were not deleted.`, result);
   }
   if (name === "canvas_inspect") {
     const projectId = requiredString(args, "projectId");
