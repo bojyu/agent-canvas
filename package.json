@@ -12,9 +12,10 @@
     "canvas": "node scripts/agent-canvas-cli.mjs",
     "build": "node scripts/run-vinext.mjs build",
     "start": "node scripts/run-vinext.mjs start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/openrouter-provider.test.mjs tests/comfly-llm-provider.test.mjs tests/grok-build-provider.test.mjs tests/antigravity-provider.test.mjs tests/image-generation-provider.test.mjs tests/video-generation-provider.test.mjs tests/media-output-store.test.mjs tests/api-key-store.test.mjs tests/skill-registry-store.test.mjs tests/canvas-domain.test.mjs tests/canvas-project-store.test.mjs tests/canvas-sync-policy.test.mjs tests/agent-canvas-mcp.test.mjs",
+    "test": "npm run build && node --test tests/bridge-http.test.mjs tests/rendered-html.test.mjs tests/openrouter-provider.test.mjs tests/comfly-llm-provider.test.mjs tests/grok-build-provider.test.mjs tests/antigravity-provider.test.mjs tests/image-generation-provider.test.mjs tests/video-generation-provider.test.mjs tests/media-output-store.test.mjs tests/api-key-store.test.mjs tests/skill-registry-store.test.mjs tests/canvas-domain.test.mjs tests/canvas-project-store.test.mjs tests/canvas-sync-policy.test.mjs tests/agent-canvas-mcp.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
@@ -23,13 +24,14 @@
     "@xyflow/react": "^12.11.2",
     "drizzle-orm": "0.45.2",
     "gsap": "^3.15.0",
-    "next": "16.2.6",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
+    "next": "16.3.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/vite-plugin": "1.56.0",
+    "@cloudflare/workers-types": "5.20260919.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -38,13 +40,18 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
+    "eslint-config-next": "16.3.5",
+    "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.0.16",
+    "wrangler": "4.135.0"
   },
-  "type": "module"
+  "type": "module",
+  "overrides": {
+    "vinext": {
+      "image-size": "2.0.4"
+    }
+  }
 }

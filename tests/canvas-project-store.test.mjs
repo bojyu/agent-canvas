@@ -45,7 +45,7 @@ test("dry-run does not persist and committed transaction is idempotent", async (
   assert.equal((await store.readProject(project.id)).nodes.length, 1);
   const applied = await store.applyTransaction(project.id, request);
   assert.equal(applied.project.revision, 2);
-  const duplicate = await store.applyTransaction(project.id, { ...request, expectedRevision: 2 });
+  const duplicate = await store.applyTransaction(project.id, request);
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.project.revision, 2);
   assert.equal(events.filter((event) => event.transactionId === request.transactionId).length, 1);

@@ -64,6 +64,7 @@ import {
   setMediaOutputDirectory,
 } from "./media-output-store.mjs";
 import { getApiKeySettings, saveApiKeyChanges } from "./api-key-store.mjs";
+import { HttpError, isAllowedOrigin, localRequestUrl, readJson } from "./bridge-http.mjs";
 import {
   applyCanvasOperations,
   applyTaskResultToProject,
@@ -290,10 +291,6 @@ const outputSchema = {
   additionalProperties: false,
 };
 
-function isAllowedOrigin(origin) {
-  return !origin || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
-}
-
 function setCors(request, response) {
   const origin = request.headers.origin;
   if (origin && isAllowedOrigin(origin)) {
@@ -405,23 +402,6 @@ async function handleMediaFileRequest(request, response, requestUrl) {
   stream.on("error", (error) => response.destroy(error));
   stream.pipe(response);
   return true;
-}
-
-async function readJson(request) {
-  let body = "";
-  for await (const chunk of request) {
-    body += chunk;
-    if (body.length > 220_000_000) throw new Error("画布或参考素材总大小过大");
-  }
-  return JSON.parse(body || "{}");
-}
-
-class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.name = "HttpError";
-    this.status = status;
-  }
 }
 
 class CodexTimeoutError extends Error {
@@ -2062,6 +2042,13 @@ async function handleAutomationRequest(request, response, requestUrl) {
 }
 
 const server = createServer(async (request, response) => {
+  let requestUrl;
+  try {
+    requestUrl = localRequestUrl(request);
+  } catch (error) {
+    sendJson(response, error instanceof HttpError ? error.status : 400, { error: error.message });
+    return;
+  }
   setCors(request, response);
 
   if (request.method === "OPTIONS") {
@@ -2069,11 +2056,6 @@ const server = createServer(async (request, response) => {
     response.end();
     return;
   }
-  if (!isAllowedOrigin(request.headers.origin)) {
-    sendJson(response, 403, { error: "只允许本机画板访问 Codex" });
-    return;
-  }
-  const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
   const pathname = requestUrl.pathname;
   try {
     if (await handleMediaFileRequest(request, response, requestUrl)) return;

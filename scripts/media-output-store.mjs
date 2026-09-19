@@ -1,4 +1,5 @@
 import { createWriteStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { Readable } from "node:stream";
@@ -74,7 +75,7 @@ function outputPath(directory, kind, taskId, index, mediaType, source) {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   const id = safeToken(taskId, "task").slice(0, 12);
   const suffix = String(index + 1).padStart(2, "0");
-  return join(directory, `${kind}-${stamp}-${id}-${suffix}${extensionFor(mediaType, source, kind)}`);
+  return join(directory, `${kind}-${stamp}-${randomUUID()}-${id}-${suffix}${extensionFor(mediaType, source, kind)}`);
 }
 
 async function writeDataUrl(source, destination) {
@@ -86,7 +87,7 @@ async function writeDataUrl(source, destination) {
 async function downloadRemote(source, destination, fetchImpl, signal) {
   const response = await fetchImpl(source, { signal });
   if (!response.ok || !response.body) throw new Error(`下载生成媒体失败：HTTP ${response.status}`);
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(destination, { flags: "wx" }));
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(destination, { flags: "wx" }), { signal });
 }
 
 async function saveOne(item, kind, taskId, index, directory, fetchImpl, signal) {

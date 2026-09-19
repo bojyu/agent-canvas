@@ -3,6 +3,7 @@ node_modules/
 .playwright-cli/
 output/playwright/
 .env.local
+.env.local.*.tmp
 dist/
 .next/
 .vinext/

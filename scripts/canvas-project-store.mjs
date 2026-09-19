@@ -205,13 +205,15 @@ export class CanvasProjectStore {
       const current = await this.readUnlocked(id);
       if (!current) throw new CanvasStoreError(404, "没有找到这个画布", "PROJECT_NOT_FOUND");
       const actualRevision = normalizeRevision(current.revision);
-      if (expectedRevision !== undefined && expectedRevision !== null && Number(expectedRevision) !== actualRevision) {
-        throw new CanvasRevisionConflictError(Number(expectedRevision), actualRevision);
-      }
       const priorTransactions = Array.isArray(current.automation?.transactions) ? current.automation.transactions : [];
       const duplicate = priorTransactions.find((entry) => entry?.id === requestId);
       if (duplicate) {
         return { project: current, summary: canvasProjectSummary(current), changes: duplicate.changes || {}, duplicate: true, dryRun: false };
+      }
+      // An acknowledged transaction may be retried after its response was lost.
+      // Its original revision is necessarily stale, but it must not run again.
+      if (expectedRevision !== undefined && expectedRevision !== null && Number(expectedRevision) !== actualRevision) {
+        throw new CanvasRevisionConflictError(Number(expectedRevision), actualRevision);
       }
       const applied = applyCanvasOperations(current, operations, { dryRun });
       if (dryRun) {

@@ -2129,6 +2129,8 @@ function FlowWorkspace() {
   const canvasFileInputRef = useRef<HTMLInputElement>(null);
   const projectLoadBusy = useRef(false);
   const canvasDraftMetaRef = useRef({ projectId: "", projectName: "", projectRevision: 0 });
+  const latestCanvasRef = useRef({ projectId, projectName, nodes, edges });
+  const saveInFlightRef = useRef(false);
   const canvasClipboardRef = useRef<CanvasClipboardPayload | null>(null);
   const pasteCountRef = useRef(0);
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
@@ -3033,6 +3035,10 @@ function FlowWorkspace() {
   }, [projectId, projectName, projectRevision]);
 
   useEffect(() => {
+    latestCanvasRef.current = { projectId, projectName, nodes, edges };
+  }, [projectId, projectName, nodes, edges]);
+
+  useEffect(() => {
     if (!hydrated) return;
     const programmaticUpdate = suppressDirty.current;
     if (programmaticUpdate) suppressDirty.current = false;
@@ -3079,7 +3085,8 @@ function FlowWorkspace() {
   }, [hydrated, openProjectIds]);
 
   const saveCurrent = useCallback(async () => {
-    if (!projectId || fileBusy) return false;
+    if (!projectId || fileBusy || saveInFlightRef.current) return false;
+    saveInFlightRef.current = true;
     setFileBusy(true);
     setSaveState("saving");
     try {
@@ -3087,14 +3094,16 @@ function FlowWorkspace() {
       setProjects((current) => [saved.project, ...current.filter((project) => project.id !== saved.project.id)]);
       const savedRevision = saved.project.revision || projectRevision + 1;
       setProjectRevision(savedRevision);
+      const latest = latestCanvasRef.current;
+      const hasNewerEdits = latest.nodes !== nodes || latest.edges !== edges || latest.projectName !== projectName;
       try {
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(createCanvasDraft({
           projectId,
-          projectName,
+          projectName: latest.projectName,
           baseRevision: savedRevision,
-          dirty: false,
-          nodes: cleanNodes(nodes),
-          edges,
+          dirty: hasNewerEdits,
+          nodes: cleanNodes(latest.nodes),
+          edges: latest.edges,
         })));
       } catch { /* The saved filesystem project remains the durable source. */ }
       tasks
@@ -3102,15 +3111,23 @@ function FlowWorkspace() {
         .forEach((task) => savedTaskIds.current.add(task.id));
       const recentSavedTaskIds = [...savedTaskIds.current].slice(-100);
       savedTaskIds.current = new Set(recentSavedTaskIds);
-      window.localStorage.setItem(SAVED_TASK_IDS_KEY, JSON.stringify(recentSavedTaskIds));
-      setSaveState("saved");
-      setToast(`「${projectName}」已保存，参考素材也已写入`);
-      return true;
+      try {
+        window.localStorage.setItem(SAVED_TASK_IDS_KEY, JSON.stringify(recentSavedTaskIds));
+      } catch { /* Browser storage failure must not report a successful disk save as failed. */ }
+      setSaveState(hasNewerEdits ? "unsaved" : "saved");
+      setToast(hasNewerEdits
+        ? `「${projectName}」已保存先前版本；保存期间的新修改尚未保存`
+        : `「${projectName}」已保存，参考素材也已写入`);
+      // A caller switching projects must not discard edits made during the save.
+      return !hasNewerEdits;
     } catch (error) {
       setSaveState("error");
       setToast(error instanceof Error ? error.message : "保存画布失败");
       return false;
-    } finally { setFileBusy(false); }
+    } finally {
+      saveInFlightRef.current = false;
+      setFileBusy(false);
+    }
   }, [projectId, projectName, nodes, edges, tasks, fileBusy, projectRevision]);
 
   const updateNode = useCallback((id: string, patch: Partial<GraphData>) => {
@@ -4220,8 +4237,8 @@ function FlowWorkspace() {
       setToast("当前有未保存编辑，请先保存副本，再载入后台版本");
       return false;
     }
-    if (projectLoadBusy.current) {
-      setToast("正在切换画布，请稍候");
+    if (projectLoadBusy.current || saveInFlightRef.current) {
+      setToast("正在保存或切换画布，请稍候");
       return false;
     }
     projectLoadBusy.current = true;
@@ -4254,7 +4271,7 @@ function FlowWorkspace() {
   }, [fitView, pendingRemoteRevision, projectId, projectRevision, saveCurrent, saveState]);
 
   const createCanvasProject = useCallback(async () => {
-    if (projectLoadBusy.current) return;
+    if (projectLoadBusy.current || saveInFlightRef.current) return;
     projectLoadBusy.current = true;
     try {
       if ((saveState === "unsaved" || saveState === "error") && !(await saveCurrent())) return;
@@ -4301,7 +4318,7 @@ function FlowWorkspace() {
   }, [openCanvasProject, openProjectIds, projectId, saveCurrent, saveState]);
 
   const saveCanvasAs = useCallback(async () => {
-    if (!projectId || projectLoadBusy.current) return;
+    if (!projectId || projectLoadBusy.current || saveInFlightRef.current) return;
     projectLoadBusy.current = true;
     setFileBusy(true);
     try {
@@ -4362,7 +4379,7 @@ function FlowWorkspace() {
   const importCanvasFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file || projectLoadBusy.current) return;
+    if (!file || projectLoadBusy.current || saveInFlightRef.current) return;
     projectLoadBusy.current = true;
     try {
       if (file.size > MAX_PORTABLE_FILE_BYTES) throw new Error("画布分享文件超过 200MB，无法导入");

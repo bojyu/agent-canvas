@@ -63,7 +63,7 @@ export function parseCanvasDraft(raw) {
   };
 }
 
-export function createCanvasDraft({ projectId, projectName, baseRevision, dirty, nodes, edges, updatedAt }) {
+export function createCanvasDraft({ projectId, projectName, baseRevision, dirty, nodes, edges, updatedAt = new Date().toISOString() }) {
   return {
     version: 1,
     projectId: String(projectId || ""),
@@ -91,4 +91,3 @@ export function mergeCanvasDraft(savedProject, draft) {
   });
   return { nodes, edges: draft?.edges || [] };
 }
-

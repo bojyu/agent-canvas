@@ -1,5 +1,6 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 
 export const API_KEY_NAMES = Object.freeze([
   "OPENROUTER_API_KEY",
@@ -13,6 +14,7 @@ export const API_KEY_NAMES = Object.freeze([
 
 const API_KEY_NAME_SET = new Set(API_KEY_NAMES);
 const MAX_API_KEY_LENGTH = 16_384;
+const pendingSaves = new Map();
 
 function normalizedApiKey(value) {
   if (value === null) return null;
@@ -75,13 +77,32 @@ export function updateEnvText(source, changes) {
 
 export async function saveApiKeyChanges(envPath, changes, env = process.env) {
   const normalized = normalizeApiKeyChanges(changes);
+  const path = resolve(envPath);
+  const previous = pendingSaves.get(path) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(() => persistApiKeyChanges(path, normalized, env));
+  pendingSaves.set(path, pending);
+  try {
+    return await pending;
+  } finally {
+    if (pendingSaves.get(path) === pending) pendingSaves.delete(path);
+  }
+}
+
+async function persistApiKeyChanges(envPath, normalized, env) {
   let source = "";
   try {
     source = await readFile(envPath, "utf8");
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  await writeFile(envPath, updateEnvText(source, normalized), { encoding: "utf8", mode: 0o600 });
+  // Replace the file atomically, including when an existing file is too public.
+  const temporaryPath = `${envPath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, updateEnvText(source, normalized), { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporaryPath, envPath);
+  } finally {
+    await unlink(temporaryPath).catch(() => {});
+  }
   for (const [name, value] of Object.entries(normalized)) {
     if (value === null) delete env[name];
     else env[name] = value;

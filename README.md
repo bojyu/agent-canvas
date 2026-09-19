@@ -140,6 +140,7 @@ npm run canvas -- preset <projectId> image-generation --expected-revision <revis
 
 ```sh
 npm run lint       # 静态检查
+npm run typecheck  # TypeScript 类型检查
 npm run build      # 构建应用
 npm test           # 构建并运行测试
 ```

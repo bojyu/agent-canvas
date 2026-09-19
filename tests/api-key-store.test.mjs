@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -69,4 +69,25 @@ test("saving API keys updates the local env file and current process environment
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("concurrent API key saves preserve both changes and restrict file permissions", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agent-canvas-keys-race-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const envPath = join(root, ".env.local");
+  await writeFile(envPath, "OTHER=value\n", { mode: 0o644 });
+  const env = {};
+  await Promise.all([
+    saveApiKeyChanges(envPath, { OPENROUTER_API_KEY: "router-key" }, env),
+    saveApiKeyChanges(envPath, { GEMINI_API_KEY: "gemini-key" }, env),
+  ]);
+  const saved = await readFile(envPath, "utf8");
+  assert.match(saved, /^OTHER=value$/m);
+  assert.match(saved, /^OPENROUTER_API_KEY="router-key"$/m);
+  assert.match(saved, /^GEMINI_API_KEY="gemini-key"$/m);
+  assert.equal(env.OPENROUTER_API_KEY, "router-key");
+  assert.equal(env.GEMINI_API_KEY, "gemini-key");
+  if (process.platform !== "win32") assert.equal((await stat(envPath)).mode & 0o777, 0o600);
+  assert.deepEqual(await readdir(root), [".env.local"]);
 });
